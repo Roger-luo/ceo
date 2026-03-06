@@ -3,4 +3,5 @@ pub mod config;
 pub mod filter;
 pub mod gh;
 pub mod github;
+pub mod pipeline;
 pub mod report;

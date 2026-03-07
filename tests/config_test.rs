@@ -106,3 +106,30 @@ name = "Developer One"
     assert_eq!(config.team[0].name, "Developer One");
     assert_eq!(config.team[0].role, "");
 }
+
+#[test]
+fn parse_config_with_agent_type() {
+    let toml_str = r#"
+[agent]
+type = "codex"
+command = "codex"
+args = ["-q"]
+timeout_secs = 60
+
+[[repos]]
+name = "org/repo"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    assert_eq!(config.agent.agent_type, "codex");
+    assert_eq!(config.agent.command, "codex");
+}
+
+#[test]
+fn agent_type_defaults_to_claude() {
+    let toml_str = r#"
+[[repos]]
+name = "org/repo"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    assert_eq!(config.agent.agent_type, "claude");
+}

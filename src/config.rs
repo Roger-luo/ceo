@@ -13,6 +13,8 @@ pub struct Config {
 
 #[derive(Debug, Deserialize)]
 pub struct AgentConfig {
+    #[serde(default = "default_agent_type", rename = "type")]
+    pub agent_type: String,
     #[serde(default = "default_agent_command")]
     pub command: String,
     #[serde(default)]
@@ -24,11 +26,16 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
+            agent_type: default_agent_type(),
             command: default_agent_command(),
             args: Vec::new(),
             timeout_secs: default_timeout(),
         }
     }
+}
+
+fn default_agent_type() -> String {
+    "claude".to_string()
 }
 
 fn default_agent_command() -> String {

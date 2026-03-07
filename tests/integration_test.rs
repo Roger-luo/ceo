@@ -1,7 +1,8 @@
+use ceo::agent::Agent;
 use ceo::config::Config;
 use ceo::gh::GhRunner;
-use ceo::agent::AgentRunner;
 use ceo::pipeline::run_pipeline;
+use ceo::prompt::Prompt;
 use ceo::report::render_markdown;
 
 struct MockGh;
@@ -48,9 +49,10 @@ impl GhRunner for MockGh {
 
 struct MockAgent;
 
-impl AgentRunner for MockAgent {
-    fn invoke(&self, prompt: &str) -> anyhow::Result<String> {
-        if prompt.contains("Summarize the past week") {
+impl Agent for MockAgent {
+    fn invoke(&self, prompt: &dyn Prompt) -> anyhow::Result<String> {
+        let rendered = prompt.render();
+        if rendered.contains("Summarize the past week") {
             Ok("Great progress on dark mode. Memory leak identified and being fixed.".to_string())
         } else {
             Ok("This issue is about updating documentation. Suggest adding priority:low label.".to_string())
@@ -79,14 +81,10 @@ fn full_pipeline_produces_valid_markdown() {
     let report = run_pipeline(&config, &MockGh, &MockAgent, 7).unwrap();
     let markdown = render_markdown(&report);
 
-    // Report should contain repo section
     assert!(markdown.contains("org/frontend"));
-    // Report should contain agent summary
     assert!(markdown.contains("Great progress on dark mode"));
-    // Report should flag issues missing "priority" label
     assert!(markdown.contains("Needs Attention"));
     assert!(markdown.contains("#11") || markdown.contains("#12"));
-    // Team overview should be present
     assert!(markdown.contains("Alice Smith"));
     assert!(markdown.contains("Bob Jones"));
 }

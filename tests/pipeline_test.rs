@@ -1,7 +1,8 @@
-use ceo::agent::AgentRunner;
+use ceo::agent::Agent;
 use ceo::config::Config;
 use ceo::gh::GhRunner;
 use ceo::pipeline::run_pipeline;
+use ceo::prompt::Prompt;
 
 struct MockGh;
 
@@ -36,8 +37,8 @@ impl GhRunner for MockGh {
 
 struct MockAgent;
 
-impl AgentRunner for MockAgent {
-    fn invoke(&self, _prompt: &str) -> anyhow::Result<String> {
+impl Agent for MockAgent {
+    fn invoke(&self, _prompt: &dyn Prompt) -> anyhow::Result<String> {
         Ok("Mock agent summary.".to_string())
     }
 }
@@ -63,7 +64,6 @@ fn pipeline_produces_report() {
     assert_eq!(report.repos[0].name, "org/frontend");
     assert!(report.repos[0].progress.contains("Mock agent summary"));
     assert!(!report.repos[0].flagged_issues.is_empty());
-    // alice should have 1 active issue
     assert_eq!(report.team_stats.len(), 1);
     assert_eq!(report.team_stats[0].active, 1);
 }

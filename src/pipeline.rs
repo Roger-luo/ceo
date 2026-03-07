@@ -1,16 +1,17 @@
 use anyhow::Result;
 use chrono::Utc;
 
-use crate::agent::{self, AgentRunner};
+use crate::agent::Agent;
 use crate::config::Config;
 use crate::filter;
 use crate::gh::{self, GhRunner};
+use crate::prompt::{IssueTriagePrompt, WeeklySummaryPrompt};
 use crate::report::{FlaggedIssue, Report, RepoSection, TeamStats};
 
 pub fn run_pipeline(
     config: &Config,
     gh_runner: &dyn GhRunner,
-    agent_runner: &dyn AgentRunner,
+    agent: &dyn Agent,
     days: i64,
 ) -> Result<Report> {
     let mut repo_sections = Vec::new();
@@ -20,12 +21,10 @@ pub fn run_pipeline(
         let all_issues = gh::fetch_issues(gh_runner, &repo_config.name)?;
         let recent = filter::filter_recent(&all_issues, days);
 
-        // Track for team stats
         for issue in &recent {
             all_recent_issues.push((*issue).clone());
         }
 
-        // Build issue summary text for agent
         let issue_summaries: String = recent
             .iter()
             .map(|i| {
@@ -40,15 +39,15 @@ pub fn run_pipeline(
             .collect::<Vec<_>>()
             .join("\n");
 
-        // Get weekly summary from agent
-        let summary_prompt =
-            agent::build_weekly_summary_prompt(&repo_config.name, &issue_summaries);
-        let summary = match agent_runner.invoke(&summary_prompt) {
+        let summary_prompt = WeeklySummaryPrompt {
+            repo: repo_config.name.clone(),
+            issue_summaries,
+        };
+        let summary = match agent.invoke(&summary_prompt) {
             Ok(s) => s,
             Err(e) => format!("Analysis unavailable: {e}"),
         };
 
-        // Find flagged issues
         let flagged_refs = filter::find_flagged_issues(&recent, &repo_config.labels_required);
         let mut flagged_issues = Vec::new();
 
@@ -62,9 +61,12 @@ pub fn run_pipeline(
                             .map(|c| format!("{}: {}", c.author, c.body))
                             .collect::<Vec<_>>()
                             .join("\n");
-                        let prompt =
-                            agent::build_triage_prompt(&issue.title, &detail.body, &comments_text);
-                        match agent_runner.invoke(&prompt) {
+                        let triage_prompt = IssueTriagePrompt {
+                            title: issue.title.clone(),
+                            body: detail.body,
+                            comments: comments_text,
+                        };
+                        match agent.invoke(&triage_prompt) {
                             Ok(s) => s,
                             Err(e) => format!("Analysis unavailable: {e}"),
                         }
@@ -89,7 +91,6 @@ pub fn run_pipeline(
         });
     }
 
-    // Team stats
     let team_stats: Vec<TeamStats> = config
         .team
         .iter()

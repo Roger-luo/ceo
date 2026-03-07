@@ -37,9 +37,9 @@ fn main() -> Result<()> {
 fn cmd_report(days: i64) -> Result<()> {
     let config = ceo::config::Config::load()?;
     let gh_runner = ceo::gh::RealGhRunner;
-    let agent_runner = ceo::agent::RealAgentRunner::from_config(&config.agent);
+    let agent = ceo::agent::AgentKind::from_config(&config.agent);
 
-    let report_data = ceo::pipeline::run_pipeline(&config, &gh_runner, &agent_runner, days)?;
+    let report_data = ceo::pipeline::run_pipeline(&config, &gh_runner, &agent, days)?;
     let markdown = ceo::report::render_markdown(&report_data);
     print!("{markdown}");
     Ok(())
@@ -48,10 +48,10 @@ fn cmd_report(days: i64) -> Result<()> {
 fn cmd_interactive() -> Result<()> {
     let config = ceo::config::Config::load()?;
     let gh_runner = ceo::gh::RealGhRunner;
-    let agent_runner = ceo::agent::RealAgentRunner::from_config(&config.agent);
+    let agent = ceo::agent::AgentKind::from_config(&config.agent);
 
     eprintln!("Fetching data and generating report...");
-    let report_data = ceo::pipeline::run_pipeline(&config, &gh_runner, &agent_runner, 7)?;
+    let report_data = ceo::pipeline::run_pipeline(&config, &gh_runner, &agent, 7)?;
     let markdown = ceo::report::render_markdown(&report_data);
 
     tui::run_tui(markdown)?;
@@ -63,9 +63,14 @@ fn cmd_init() -> Result<()> {
 # Place this file at ~/.config/ceo/config.toml
 
 [agent]
-command = "claude"
-args = ["-p"]
+type = "claude"
 timeout_secs = 120
+
+# Uncomment to use a different agent:
+# type = "codex"
+# type = "custom-tool"
+# command = "custom-tool"
+# args = ["--prompt"]
 
 [[repos]]
 name = "org/repo-name"

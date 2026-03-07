@@ -1,35 +1,45 @@
-use ceo::agent::{AgentRunner, run_agent};
-
-struct MockAgent {
-    response: String,
-}
-
-impl AgentRunner for MockAgent {
-    fn invoke(&self, _prompt: &str) -> anyhow::Result<String> {
-        Ok(self.response.clone())
-    }
-}
+use ceo::agent::{AgentKind};
+use ceo::config::AgentConfig;
 
 #[test]
-fn run_agent_returns_response() {
-    let agent = MockAgent {
-        response: "Summary: things happened.".to_string(),
+fn agent_kind_from_config_claude() {
+    let config = AgentConfig {
+        agent_type: "claude".to_string(),
+        command: "claude".to_string(),
+        args: vec!["-p".to_string()],
+        timeout_secs: 120,
     };
-    let result = run_agent(&agent, "Summarize this").unwrap();
-    assert_eq!(result, "Summary: things happened.");
+    let agent = AgentKind::from_config(&config);
+    assert!(matches!(agent, AgentKind::Claude(_)));
 }
 
 #[test]
-fn weekly_summary_prompt_contains_repo() {
-    let prompt = ceo::agent::build_weekly_summary_prompt("org/frontend", "- #1 Fix bug\n- #2 Add feature");
-    assert!(prompt.contains("org/frontend"));
-    assert!(prompt.contains("Fix bug"));
+fn agent_kind_from_config_codex() {
+    let config = AgentConfig {
+        agent_type: "codex".to_string(),
+        command: "codex".to_string(),
+        args: vec![],
+        timeout_secs: 120,
+    };
+    let agent = AgentKind::from_config(&config);
+    assert!(matches!(agent, AgentKind::Codex(_)));
 }
 
 #[test]
-fn triage_prompt_contains_issue_info() {
-    let prompt = ceo::agent::build_triage_prompt("Fix login redirect", "The login page redirects.", "alice: I think it's SSO.");
-    assert!(prompt.contains("Fix login redirect"));
-    assert!(prompt.contains("login page redirects"));
-    assert!(prompt.contains("SSO"));
+fn agent_kind_from_config_unknown_falls_back_to_generic() {
+    let config = AgentConfig {
+        agent_type: "llama".to_string(),
+        command: "llama-cli".to_string(),
+        args: vec!["--prompt".to_string()],
+        timeout_secs: 60,
+    };
+    let agent = AgentKind::from_config(&config);
+    assert!(matches!(agent, AgentKind::Generic(_)));
+}
+
+#[test]
+fn agent_kind_default_config_is_claude() {
+    let config = AgentConfig::default();
+    let agent = AgentKind::from_config(&config);
+    assert!(matches!(agent, AgentKind::Claude(_)));
 }

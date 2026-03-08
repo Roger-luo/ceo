@@ -71,12 +71,11 @@ pub(crate) struct ProjectItemFields {
 
 fn get_field_ci(value: &serde_json::Value, names: &[&str]) -> Option<String> {
     for name in names {
-        if let Some(v) = value.get(name) {
-            if let Some(s) = v.as_str() {
-                if !s.is_empty() {
-                    return Some(s.to_string());
-                }
-            }
+        if let Some(v) = value.get(name)
+            && let Some(s) = v.as_str()
+            && !s.is_empty()
+        {
+            return Some(s.to_string());
         }
     }
     None

@@ -34,7 +34,7 @@ impl TuiApp {
     }
 
     pub fn handle_command(&mut self, cmd: &str) -> Option<String> {
-        let parts: Vec<&str> = cmd.trim().split_whitespace().collect();
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
         match parts.first().copied() {
             Some("help") => Some(
                 "Commands:\n  refresh  — re-fetch report\n  show #N  — show issue detail\n  \
@@ -95,39 +95,39 @@ pub fn run_tui(report_text: String) -> Result<()> {
             frame.render_widget(repl_widget, chunks[1]);
         })?;
 
-        if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        if event::poll(std::time::Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    break;
+                }
+                KeyCode::Enter => {
+                    let cmd = app.input.clone();
+                    app.input.clear();
+                    app.output_lines.push(format!("> {cmd}"));
+                    if let Some(response) = app.handle_command(&cmd) {
+                        for line in response.lines() {
+                            app.output_lines.push(line.to_string());
+                        }
+                    }
+                    if app.should_quit {
                         break;
                     }
-                    KeyCode::Enter => {
-                        let cmd = app.input.clone();
-                        app.input.clear();
-                        app.output_lines.push(format!("> {cmd}"));
-                        if let Some(response) = app.handle_command(&cmd) {
-                            for line in response.lines() {
-                                app.output_lines.push(line.to_string());
-                            }
-                        }
-                        if app.should_quit {
-                            break;
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        app.input.push(c);
-                    }
-                    KeyCode::Backspace => {
-                        app.input.pop();
-                    }
-                    KeyCode::Up => {
-                        app.report_scroll = app.report_scroll.saturating_sub(1);
-                    }
-                    KeyCode::Down => {
-                        app.report_scroll = app.report_scroll.saturating_add(1);
-                    }
-                    _ => {}
                 }
+                KeyCode::Char(c) => {
+                    app.input.push(c);
+                }
+                KeyCode::Backspace => {
+                    app.input.pop();
+                }
+                KeyCode::Up => {
+                    app.report_scroll = app.report_scroll.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    app.report_scroll = app.report_scroll.saturating_add(1);
+                }
+                _ => {}
             }
         }
     }

@@ -286,3 +286,44 @@ name = "org/repo"
     assert_eq!(config.get_field("agent.tools.triage").unwrap(), "Bash(gh:*),Read");
     assert_eq!(config.agent.tools_for("triage").unwrap(), &vec!["Bash(gh:*)".to_string(), "Read".to_string()]);
 }
+
+#[test]
+fn parse_config_with_project() {
+    let config = Config::load_from_str(r#"
+[project]
+org = "acme-corp"
+number = 3
+
+[[repos]]
+name = "org/repo"
+"#).unwrap();
+
+    let project = config.project.unwrap();
+    assert_eq!(project.org, "acme-corp");
+    assert_eq!(project.number, 3);
+}
+
+#[test]
+fn config_without_project_section() {
+    let config = Config::load_from_str(r#"
+[[repos]]
+name = "org/repo"
+"#).unwrap();
+
+    assert!(config.project.is_none());
+}
+
+#[test]
+fn config_get_set_project_fields() {
+    let mut config = Config::load_from_str(r#"
+[[repos]]
+name = "org/repo"
+"#).unwrap();
+
+    config.set_field("project.org", "acme-corp").unwrap();
+    config.set_field("project.number", "3").unwrap();
+
+    assert_eq!(config.get_field("project.org").unwrap(), "acme-corp");
+    assert_eq!(config.get_field("project.number").unwrap(), "3");
+    assert_eq!(config.project.unwrap().number, 3);
+}

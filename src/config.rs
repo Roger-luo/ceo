@@ -14,6 +14,8 @@ pub struct Config {
     pub repos: Vec<RepoConfig>,
     #[serde(default)]
     pub team: Vec<TeamMember>,
+    #[serde(default)]
+    pub project: Option<ProjectConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -92,6 +94,12 @@ pub struct TeamMember {
     pub role: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectConfig {
+    pub org: String,
+    pub number: u64,
+}
+
 impl Config {
     /// Parse a TOML string into a Config.
     pub fn load_from_str(s: &str) -> Result<Self> {
@@ -151,6 +159,12 @@ impl Config {
                     .map(|v| v.join(","))
                     .ok_or_else(|| ConfigError::NoTools(kind.to_string()))
             }
+            "project.org" => self.project.as_ref()
+                .map(|p| p.org.clone())
+                .ok_or_else(|| ConfigError::UnknownKey("project.org (not configured)".to_string())),
+            "project.number" => self.project.as_ref()
+                .map(|p| p.number.to_string())
+                .ok_or_else(|| ConfigError::UnknownKey("project.number (not configured)".to_string())),
             _ => Err(ConfigError::UnknownKey(key.to_string())),
         }
     }
@@ -200,6 +214,30 @@ impl Config {
             }
             "team.remove" => {
                 self.team.retain(|t| t.github != value);
+            }
+            "project.org" => {
+                if let Some(ref mut p) = self.project {
+                    p.org = value.to_string();
+                } else {
+                    self.project = Some(ProjectConfig {
+                        org: value.to_string(),
+                        number: 0,
+                    });
+                }
+            }
+            "project.number" => {
+                let n: u64 = value.parse().map_err(|_| ConfigError::InvalidValue {
+                    key: key.to_string(),
+                    message: format!("expected integer, got: {value}"),
+                })?;
+                if let Some(ref mut p) = self.project {
+                    p.number = n;
+                } else {
+                    self.project = Some(ProjectConfig {
+                        org: String::new(),
+                        number: n,
+                    });
+                }
             }
             _ => return Err(ConfigError::UnknownKey(key.to_string())),
         }

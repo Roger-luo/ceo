@@ -33,3 +33,4 @@
 # Added by cargo
 
 /target
+.worktrees/

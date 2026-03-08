@@ -172,14 +172,21 @@ impl Agent for GenericAgent {
 fn run_cli_agent(command: &str, args: &[&str], prompt_text: &str) -> Result<String> {
     debug!("Running agent: {} {}", command, args.join(" "));
     debug!("Prompt length: {} chars", prompt_text.len());
-    let child = Command::new(command)
+    let mut child = Command::new(command)
         .args(args)
-        .arg(prompt_text)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| AgentError::NotFound { command: command.to_string(), source: e })?;
+
+    // Write prompt via stdin to avoid OS argument length limits
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin.write_all(prompt_text.as_bytes())
+            .map_err(AgentError::OutputRead)?;
+        // stdin is dropped here, closing the pipe
+    }
 
     let output = child
         .wait_with_output()

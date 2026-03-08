@@ -94,16 +94,11 @@ pub fn run_pipeline(
                 comments: comments_text,
             };
 
-            let summary = match agent.invoke(&prompt) {
-                Ok(s) => {
-                    debug!("Issue #{} summary: {} chars", issue.number, s.len());
-                    s
-                }
-                Err(e) => {
-                    debug!("Issue #{} summary failed: {e}", issue.number);
-                    format!("#{} {}: summary unavailable", issue.number, issue.title)
-                }
-            };
+            let summary = agent.invoke(&prompt).map_err(|e| {
+                eprintln!("  Error summarizing #{}: {e}", issue.number);
+                e
+            })?;
+            debug!("Issue #{} summary: {} chars", issue.number, summary.len());
 
             per_issue_summaries.push(format!("- #{} {}: {}", issue.number, issue.title, summary));
         }
@@ -118,16 +113,10 @@ pub fn run_pipeline(
                 repo: repo_config.name.clone(),
                 issue_summaries: aggregated,
             };
-            match agent.invoke(&prompt) {
-                Ok(s) => {
-                    debug!("Repo summary received ({} chars)", s.len());
-                    s
-                }
-                Err(e) => {
-                    debug!("Repo summary failed: {e}");
-                    format!("Analysis unavailable: {e}")
-                }
-            }
+            agent.invoke(&prompt).map_err(|e| {
+                eprintln!("  Error generating repo summary: {e}");
+                e
+            })?
         };
 
         // Triage flagged issues
@@ -154,10 +143,10 @@ pub fn run_pipeline(
                 body,
                 comments: comments_text,
             };
-            let triage_summary = match agent.invoke(&triage_prompt) {
-                Ok(s) => s,
-                Err(e) => format!("Analysis unavailable: {e}"),
-            };
+            let triage_summary = agent.invoke(&triage_prompt).map_err(|e| {
+                eprintln!("  Error triaging #{}: {e}", issue.number);
+                e
+            })?;
 
             flagged_issues.push(FlaggedIssue {
                 number: issue.number,

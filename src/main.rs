@@ -46,6 +46,7 @@ enum ConfigAction {
 }
 
 fn main() -> Result<()> {
+    env_logger::init();
     let cli = Cli::parse();
 
     match cli.command {
@@ -108,51 +109,121 @@ fn cmd_config(action: Option<ConfigAction>) -> Result<()> {
 }
 
 fn cmd_config_wizard() -> Result<()> {
-    use std::io::{self, BufRead, Write};
+    use rustyline::DefaultEditor;
 
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
+    let mut rl = DefaultEditor::new()?;
 
     let mut config = ceo::config::Config::load()
         .unwrap_or_else(|_| toml::from_str("repos = []").unwrap());
 
+    eprintln!("\n--- Agent ---");
     // Agent type
-    eprint!("Agent type [{}]: ", config.agent.agent_type);
-    stdout.flush()?;
-    let mut line = String::new();
-    stdin.lock().read_line(&mut line)?;
+    let line = rl.readline(&format!("Agent type [{}]: ", config.agent.agent_type))?;
     let line = line.trim();
     if !line.is_empty() {
         config.agent.agent_type = line.to_string();
     }
 
     // Timeout
-    eprint!("Timeout in seconds [{}]: ", config.agent.timeout_secs);
-    stdout.flush()?;
-    let mut line = String::new();
-    stdin.lock().read_line(&mut line)?;
+    let line = rl.readline(&format!("Timeout in seconds [{}]: ", config.agent.timeout_secs))?;
     let line = line.trim();
     if !line.is_empty() {
         config.agent.timeout_secs = line.parse()
             .context("Invalid number for timeout")?;
     }
 
+    // Models
+    eprintln!("\n--- Models ---");
+    let default_model_display = if config.agent.model.is_empty() { "agent default".to_string() } else { config.agent.model.clone() };
+    eprintln!("Default model: {default_model_display}");
+    if !config.agent.models.is_empty() {
+        for (kind, model) in &config.agent.models {
+            eprintln!("  {kind}: {model}");
+        }
+    }
+    let line = rl.readline(&format!("Default model [{}]: ", default_model_display))?;
+    let line = line.trim();
+    if !line.is_empty() {
+        config.agent.model = line.to_string();
+    }
+
+    // Per-prompt model overrides
+    for kind in &["summary", "triage"] {
+        let current = config.agent.models.get(*kind)
+            .map(|s| s.as_str())
+            .unwrap_or("(default)");
+        let line = rl.readline(&format!("Model for {kind} [{}]: ", current))?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "-" {
+            config.agent.models.remove(*kind);
+        } else {
+            config.agent.models.insert(kind.to_string(), line.to_string());
+        }
+    }
+
+    // Per-prompt extra tools
+    eprintln!("\n--- Extra tools ---");
+    eprintln!("  Some prompts have built-in tool requirements (e.g. triage always gets gh).");
+    eprintln!("  Add extra tools per prompt type here, e.g. Read,WebSearch");
+    for kind in &["summary", "triage"] {
+        let current = config.agent.tools.get(*kind)
+            .map(|v| if v.is_empty() { "(none)".to_string() } else { v.join(", ") })
+            .unwrap_or("(none)".to_string());
+        let line = rl.readline(&format!("Extra tools for {kind} [{current}]: "))?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "-" {
+            config.agent.tools.remove(*kind);
+        } else {
+            let tools: Vec<String> = line.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            config.agent.tools.insert(kind.to_string(), tools);
+        }
+    }
+
     // Repos
+    eprintln!("\n--- Repos ---");
     if !config.repos.is_empty() {
-        eprintln!("Current repos: {}", config.repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "));
+        for (i, repo) in config.repos.iter().enumerate() {
+            let labels = if repo.labels_required.is_empty() {
+                "all issues".to_string()
+            } else {
+                format!("required labels: {}", repo.labels_required.join(", "))
+            };
+            eprintln!("  {}. {} ({})", i + 1, repo.name, labels);
+        }
+        let line = rl.readline("Remove repos by number (e.g. 1,3), or Enter to keep all: ")?;
+        let line = line.trim();
+        if !line.is_empty() {
+            let indices: Vec<usize> = line.split(',')
+                .filter_map(|s| s.trim().parse::<usize>().ok())
+                .collect();
+            // Remove in reverse order to keep indices stable
+            let mut to_remove: Vec<usize> = indices.into_iter()
+                .filter(|&i| i >= 1 && i <= config.repos.len())
+                .map(|i| i - 1)
+                .collect();
+            to_remove.sort();
+            to_remove.dedup();
+            for i in to_remove.into_iter().rev() {
+                eprintln!("  Removed: {}", config.repos[i].name);
+                config.repos.remove(i);
+            }
+        }
     }
     loop {
-        eprint!("Add a repo (org/name), or Enter to finish: ");
-        stdout.flush()?;
-        let mut line = String::new();
-        stdin.lock().read_line(&mut line)?;
+        let line = rl.readline("Add a repo (org/name), or Enter to finish: ")?;
         let line = line.trim();
         if line.is_empty() { break; }
 
-        eprint!("Required labels (comma-separated, or Enter for none): ");
-        stdout.flush()?;
-        let mut labels_line = String::new();
-        stdin.lock().read_line(&mut labels_line)?;
+        let labels_line = rl.readline("  Only flag issues missing these labels, e.g. priority,bug (Enter to track all): ")?;
         let labels: Vec<String> = labels_line.trim()
             .split(',')
             .map(|s| s.trim().to_string())
@@ -166,26 +237,37 @@ fn cmd_config_wizard() -> Result<()> {
     }
 
     // Team
+    eprintln!("\n--- Team ---");
     if !config.team.is_empty() {
-        eprintln!("Current team: {}", config.team.iter().map(|t| t.github.as_str()).collect::<Vec<_>>().join(", "));
+        for (i, member) in config.team.iter().enumerate() {
+            let role = if member.role.is_empty() { "" } else { &member.role };
+            eprintln!("  {}. @{} — {} {}", i + 1, member.github, member.name, role);
+        }
+        let line = rl.readline("Remove members by number (e.g. 1,3), or Enter to keep all: ")?;
+        let line = line.trim();
+        if !line.is_empty() {
+            let indices: Vec<usize> = line.split(',')
+                .filter_map(|s| s.trim().parse::<usize>().ok())
+                .collect();
+            let mut to_remove: Vec<usize> = indices.into_iter()
+                .filter(|&i| i >= 1 && i <= config.team.len())
+                .map(|i| i - 1)
+                .collect();
+            to_remove.sort();
+            to_remove.dedup();
+            for i in to_remove.into_iter().rev() {
+                eprintln!("  Removed: @{}", config.team[i].github);
+                config.team.remove(i);
+            }
+        }
     }
     loop {
-        eprint!("Add team member (github username), or Enter to finish: ");
-        stdout.flush()?;
-        let mut line = String::new();
-        stdin.lock().read_line(&mut line)?;
+        let line = rl.readline("Add team member (github username), or Enter to finish: ")?;
         let github = line.trim().to_string();
         if github.is_empty() { break; }
 
-        eprint!("Full name: ");
-        stdout.flush()?;
-        let mut name_line = String::new();
-        stdin.lock().read_line(&mut name_line)?;
-
-        eprint!("Role: ");
-        stdout.flush()?;
-        let mut role_line = String::new();
-        stdin.lock().read_line(&mut role_line)?;
+        let name_line = rl.readline("  Full name: ")?;
+        let role_line = rl.readline("  Role: ")?;
 
         config.team.push(ceo::config::TeamMember {
             github,
@@ -196,6 +278,6 @@ fn cmd_config_wizard() -> Result<()> {
 
     config.save()?;
     let path = ceo::config::Config::config_path();
-    eprintln!("Config saved to {}", path.display());
+    eprintln!("\nConfig saved to {}", path.display());
     Ok(())
 }

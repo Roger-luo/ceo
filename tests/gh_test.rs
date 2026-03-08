@@ -1,3 +1,4 @@
+use ceo::error::GhError;
 use ceo::gh::GhRunner;
 
 struct MockGhRunner {
@@ -15,7 +16,7 @@ impl MockGhRunner {
 }
 
 impl GhRunner for MockGhRunner {
-    fn run_gh(&self, args: &[&str]) -> anyhow::Result<String> {
+    fn run_gh(&self, args: &[&str]) -> Result<String, GhError> {
         if args.iter().any(|a| *a == "list") {
             Ok(self.issue_list_json.clone())
         } else {

@@ -219,3 +219,70 @@ name = "org/repo"
 
     assert!(config.get_field("nonexistent.field").is_err());
 }
+
+#[test]
+fn parse_config_with_models() {
+    let config = Config::load_from_str(r#"
+[agent]
+type = "claude"
+model = "sonnet"
+
+[agent.models]
+summary = "opus"
+triage = "haiku"
+
+[[repos]]
+name = "org/repo"
+"#).unwrap();
+
+    assert_eq!(config.agent.model, "sonnet");
+    assert_eq!(config.agent.model_for("summary"), "opus");
+    assert_eq!(config.agent.model_for("triage"), "haiku");
+    assert_eq!(config.agent.model_for("other"), "sonnet");
+}
+
+#[test]
+fn config_get_set_model_fields() {
+    let mut config = Config::load_from_str(r#"
+[[repos]]
+name = "org/repo"
+"#).unwrap();
+
+    config.set_field("agent.model", "sonnet").unwrap();
+    assert_eq!(config.get_field("agent.model").unwrap(), "sonnet");
+
+    config.set_field("agent.models.triage", "haiku").unwrap();
+    assert_eq!(config.get_field("agent.models.triage").unwrap(), "haiku");
+    assert_eq!(config.agent.model_for("triage"), "haiku");
+}
+
+#[test]
+fn parse_config_with_tools() {
+    let config = Config::load_from_str(r#"
+[agent]
+type = "claude"
+
+[agent.tools]
+summary = []
+triage = ["Bash(gh:*)", "Read"]
+
+[[repos]]
+name = "org/repo"
+"#).unwrap();
+
+    assert!(config.agent.tools_for("summary").unwrap().is_empty());
+    assert_eq!(config.agent.tools_for("triage").unwrap(), &vec!["Bash(gh:*)".to_string(), "Read".to_string()]);
+    assert!(config.agent.tools_for("other").is_none());
+}
+
+#[test]
+fn config_get_set_tools_fields() {
+    let mut config = Config::load_from_str(r#"
+[[repos]]
+name = "org/repo"
+"#).unwrap();
+
+    config.set_field("agent.tools.triage", "Bash(gh:*),Read").unwrap();
+    assert_eq!(config.get_field("agent.tools.triage").unwrap(), "Bash(gh:*),Read");
+    assert_eq!(config.agent.tools_for("triage").unwrap(), &vec!["Bash(gh:*)".to_string(), "Read".to_string()]);
+}

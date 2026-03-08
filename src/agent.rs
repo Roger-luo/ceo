@@ -1,7 +1,12 @@
-use anyhow::{Context, Result};
-use crate::config::AgentConfig;
-use crate::prompt::Prompt;
+use log::debug;
+use std::collections::HashMap;
 use std::process::{Command, Stdio};
+
+use crate::config::AgentConfig;
+use crate::error::AgentError;
+use crate::prompt::Prompt;
+
+type Result<T> = std::result::Result<T, AgentError>;
 
 pub trait Agent {
     fn invoke(&self, prompt: &dyn Prompt) -> Result<String>;
@@ -38,6 +43,9 @@ impl Agent for AgentKind {
 pub struct ClaudeAgent {
     pub command: String,
     pub timeout_secs: u64,
+    pub model: String,
+    pub models: HashMap<String, String>,
+    pub tools: HashMap<String, Vec<String>>,
 }
 
 impl ClaudeAgent {
@@ -49,14 +57,60 @@ impl ClaudeAgent {
                 config.command.clone()
             },
             timeout_secs: config.timeout_secs,
+            model: config.model.clone(),
+            models: config.models.clone(),
+            tools: config.tools.clone(),
         }
+    }
+
+    fn model_for(&self, kind: &str) -> &str {
+        if let Some(m) = self.models.get(kind) {
+            return m.as_str();
+        }
+        if !self.model.is_empty() {
+            return &self.model;
+        }
+        // Cost-effective defaults per prompt type
+        match kind {
+            "triage" => "haiku",
+            _ => "sonnet",
+        }
+    }
+
+    fn tools_for(&self, kind: &str) -> Option<&Vec<String>> {
+        self.tools.get(kind)
     }
 }
 
 impl Agent for ClaudeAgent {
     fn invoke(&self, prompt: &dyn Prompt) -> Result<String> {
         let rendered = prompt.render();
-        run_cli_agent(&self.command, &["-p"], &rendered)
+        let kind = prompt.kind();
+        let model = self.model_for(kind);
+        let mut args = vec!["-p".to_string(), "--model".to_string(), model.to_string()];
+
+        // Merge prompt's required tools with any user-configured extras
+        let required = prompt.required_tools();
+        let extra = self.tools_for(kind);
+        let mut all_tools: Vec<&str> = required.to_vec();
+        if let Some(extras) = extra {
+            for t in extras {
+                if !all_tools.contains(&t.as_str()) {
+                    all_tools.push(t.as_str());
+                }
+            }
+        }
+        // Always pass --allowedTools: explicit list if tools needed,
+        // empty string to disable all tools otherwise
+        args.push("--allowedTools".to_string());
+        if all_tools.is_empty() {
+            args.push(String::new());
+        } else {
+            args.push(all_tools.join(","));
+        }
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        run_cli_agent(&self.command, &args_refs, &rendered)
     }
 }
 
@@ -116,6 +170,8 @@ impl Agent for GenericAgent {
 // --- Shared CLI execution ---
 
 fn run_cli_agent(command: &str, args: &[&str], prompt_text: &str) -> Result<String> {
+    debug!("Running agent: {} {}", command, args.join(" "));
+    debug!("Prompt length: {} chars", prompt_text.len());
     let child = Command::new(command)
         .args(args)
         .arg(prompt_text)
@@ -123,15 +179,23 @@ fn run_cli_agent(command: &str, args: &[&str], prompt_text: &str) -> Result<Stri
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("Agent command '{}' not found. Check your config.", command))?;
+        .map_err(|e| AgentError::NotFound { command: command.to_string(), source: e })?;
 
     let output = child
         .wait_with_output()
-        .context("Failed to read agent output")?;
+        .map_err(AgentError::OutputRead)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Agent exited with error: {}", stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if !stderr.is_empty() {
+            stderr.to_string()
+        } else if !stdout.is_empty() {
+            stdout.to_string()
+        } else {
+            format!("exit code: {}", output.status)
+        };
+        return Err(AgentError::ExitError(detail));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())

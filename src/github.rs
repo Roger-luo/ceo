@@ -1,6 +1,9 @@
-use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+
+use crate::error::GhError;
+
+type Result<T> = std::result::Result<T, GhError>;
 
 // --- Public types ---
 

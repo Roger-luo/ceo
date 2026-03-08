@@ -1,6 +1,10 @@
-use anyhow::{Context, Result};
-use crate::github::{Issue, IssueDetail};
+use log::debug;
 use std::process::Command;
+
+use crate::error::GhError;
+use crate::github::{Issue, IssueDetail};
+
+type Result<T> = std::result::Result<T, GhError>;
 
 pub trait GhRunner {
     fn run_gh(&self, args: &[&str]) -> Result<String>;
@@ -10,17 +14,18 @@ pub struct RealGhRunner;
 
 impl GhRunner for RealGhRunner {
     fn run_gh(&self, args: &[&str]) -> Result<String> {
+        debug!("Running: gh {}", args.join(" "));
         let output = Command::new("gh")
             .args(args)
             .output()
-            .context("Failed to run gh CLI. Is it installed? https://cli.github.com")?;
+            .map_err(GhError::NotInstalled)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("auth login") || stderr.contains("not logged") {
-                anyhow::bail!("gh is not authenticated. Run `gh auth login` first.");
+                return Err(GhError::NotAuthenticated);
             }
-            anyhow::bail!("gh command failed: {}", stderr);
+            return Err(GhError::CommandFailed(stderr.to_string()));
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())

@@ -1,5 +1,6 @@
 use ceo::agent::Agent;
 use ceo::config::Config;
+use ceo::error::{AgentError, GhError};
 use ceo::gh::GhRunner;
 use ceo::pipeline::run_pipeline;
 use ceo::prompt::Prompt;
@@ -7,7 +8,7 @@ use ceo::prompt::Prompt;
 struct MockGh;
 
 impl GhRunner for MockGh {
-    fn run_gh(&self, args: &[&str]) -> anyhow::Result<String> {
+    fn run_gh(&self, args: &[&str]) -> Result<String, GhError> {
         if args.iter().any(|a| *a == "list") {
             Ok(r#"[{
                 "number": 1,
@@ -38,7 +39,7 @@ impl GhRunner for MockGh {
 struct MockAgent;
 
 impl Agent for MockAgent {
-    fn invoke(&self, _prompt: &dyn Prompt) -> anyhow::Result<String> {
+    fn invoke(&self, _prompt: &dyn Prompt) -> Result<String, AgentError> {
         Ok("Mock agent summary.".to_string())
     }
 }

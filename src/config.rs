@@ -1,6 +1,11 @@
-use anyhow::{Context, Result};
+use log::debug;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+
+use crate::error::ConfigError;
+
+type Result<T> = std::result::Result<T, ConfigError>;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
@@ -21,6 +26,12 @@ pub struct AgentConfig {
     pub args: Vec<String>,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub models: HashMap<String, String>,
+    #[serde(default)]
+    pub tools: HashMap<String, Vec<String>>,
 }
 
 impl Default for AgentConfig {
@@ -30,7 +41,27 @@ impl Default for AgentConfig {
             command: default_agent_command(),
             args: Vec::new(),
             timeout_secs: default_timeout(),
+            model: String::new(),
+            models: HashMap::new(),
+            tools: HashMap::new(),
         }
+    }
+}
+
+impl AgentConfig {
+    /// Returns the model to use for a given prompt kind.
+    /// Checks `models` map first, falls back to `model`, then empty (agent default).
+    pub fn model_for(&self, kind: &str) -> &str {
+        if let Some(m) = self.models.get(kind) {
+            return m.as_str();
+        }
+        &self.model
+    }
+
+    /// Returns the allowed tools for a given prompt kind.
+    /// Returns None if no tools are configured (agent decides).
+    pub fn tools_for(&self, kind: &str) -> Option<&Vec<String>> {
+        self.tools.get(kind)
     }
 }
 
@@ -64,9 +95,7 @@ pub struct TeamMember {
 impl Config {
     /// Parse a TOML string into a Config.
     pub fn load_from_str(s: &str) -> Result<Self> {
-        let config: Config =
-            toml::from_str(s).context("Failed to parse TOML config")?;
-        Ok(config)
+        Ok(toml::from_str(s)?)
     }
 
     /// Load config by checking (in order):
@@ -75,9 +104,10 @@ impl Config {
     /// 3. ./ceo.toml
     pub fn load() -> Result<Self> {
         let path = Self::find_config_path()
-            .context("No config file found. Set $CEO_CONFIG, create ~/.config/ceo/config.toml, or create ./ceo.toml")?;
+            .ok_or(ConfigError::NotFound)?;
+        debug!("Loading config from {}", path.display());
         let contents = std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+            .map_err(|e| ConfigError::ReadFile { path: path.clone(), source: e })?;
         Self::load_from_str(&contents)
     }
 
@@ -94,12 +124,11 @@ impl Config {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+                .map_err(|e| ConfigError::CreateDir { path: parent.to_path_buf(), source: e })?;
         }
-        let toml_str = toml::to_string_pretty(self)
-            .context("Failed to serialize config to TOML")?;
+        let toml_str = toml::to_string_pretty(self)?;
         std::fs::write(&path, toml_str)
-            .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+            .map_err(|e| ConfigError::WriteFile { path: path.clone(), source: e })?;
         Ok(())
     }
 
@@ -109,7 +138,20 @@ impl Config {
             "agent.command" => Ok(self.agent.command.clone()),
             "agent.timeout_secs" => Ok(self.agent.timeout_secs.to_string()),
             "agent.args" => Ok(self.agent.args.join(",")),
-            _ => anyhow::bail!("Unknown config key: {key}. Valid keys: agent.type, agent.command, agent.timeout_secs, agent.args"),
+            "agent.model" => Ok(self.agent.model.clone()),
+            k if k.starts_with("agent.models.") => {
+                let kind = &k["agent.models.".len()..];
+                self.agent.models.get(kind)
+                    .cloned()
+                    .ok_or_else(|| ConfigError::NoModel(kind.to_string()))
+            }
+            k if k.starts_with("agent.tools.") => {
+                let kind = &k["agent.tools.".len()..];
+                self.agent.tools.get(kind)
+                    .map(|v| v.join(","))
+                    .ok_or_else(|| ConfigError::NoTools(kind.to_string()))
+            }
+            _ => Err(ConfigError::UnknownKey(key.to_string())),
         }
     }
 
@@ -119,10 +161,26 @@ impl Config {
             "agent.command" => self.agent.command = value.to_string(),
             "agent.timeout_secs" => {
                 self.agent.timeout_secs = value.parse()
-                    .with_context(|| format!("Invalid timeout value: {value}"))?;
+                    .map_err(|_| ConfigError::InvalidValue {
+                        key: key.to_string(),
+                        message: format!("expected integer, got: {value}"),
+                    })?;
             }
             "agent.args" => {
                 self.agent.args = value.split(',').map(|s| s.trim().to_string()).collect();
+            }
+            "agent.model" => self.agent.model = value.to_string(),
+            k if k.starts_with("agent.models.") => {
+                let kind = k["agent.models.".len()..].to_string();
+                self.agent.models.insert(kind, value.to_string());
+            }
+            k if k.starts_with("agent.tools.") => {
+                let kind = k["agent.tools.".len()..].to_string();
+                let tools: Vec<String> = value.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                self.agent.tools.insert(kind, tools);
             }
             "repos.add" => {
                 self.repos.push(RepoConfig {
@@ -143,7 +201,7 @@ impl Config {
             "team.remove" => {
                 self.team.retain(|t| t.github != value);
             }
-            _ => anyhow::bail!("Unknown config key: {key}"),
+            _ => return Err(ConfigError::UnknownKey(key.to_string())),
         }
         Ok(())
     }

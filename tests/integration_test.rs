@@ -1,5 +1,6 @@
 use ceo::agent::Agent;
 use ceo::config::Config;
+use ceo::error::{AgentError, GhError};
 use ceo::gh::GhRunner;
 use ceo::pipeline::run_pipeline;
 use ceo::prompt::Prompt;
@@ -8,7 +9,7 @@ use ceo::report::render_markdown;
 struct MockGh;
 
 impl GhRunner for MockGh {
-    fn run_gh(&self, args: &[&str]) -> anyhow::Result<String> {
+    fn run_gh(&self, args: &[&str]) -> Result<String, GhError> {
         if args.iter().any(|a| *a == "list") {
             Ok(r#"[
                 {
@@ -50,7 +51,7 @@ impl GhRunner for MockGh {
 struct MockAgent;
 
 impl Agent for MockAgent {
-    fn invoke(&self, prompt: &dyn Prompt) -> anyhow::Result<String> {
+    fn invoke(&self, prompt: &dyn Prompt) -> Result<String, AgentError> {
         let rendered = prompt.render();
         if rendered.contains("Summarize the past week") {
             Ok("Great progress on dark mode. Memory leak identified and being fixed.".to_string())

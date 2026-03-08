@@ -38,7 +38,7 @@ fn parse_gh_issue_detail_json() {
         "body": "This issue is about the login redirect loop.",
         "comments": [
             {
-                "id": 1001,
+                "id": "IC_mock_1001",
                 "author": {"login": "alice"},
                 "body": "I think this is caused by the SSO config.",
                 "createdAt": "2026-03-03T12:00:00Z"

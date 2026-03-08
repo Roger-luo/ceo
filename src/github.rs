@@ -1,3 +1,5 @@
+use std::hash::{Hash, Hasher};
+
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
@@ -64,7 +66,7 @@ struct GhIssueDetail {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GhComment {
-    id: u64,
+    id: String,
     author: GhUser,
     body: String,
     created_at: DateTime<Utc>,
@@ -111,7 +113,7 @@ impl IssueDetail {
                 .comments
                 .into_iter()
                 .map(|c| Comment {
-                    id: c.id,
+                    id: hash_node_id(&c.id),
                     author: c.author.login,
                     body: c.body,
                     created_at: c.created_at,
@@ -119,4 +121,11 @@ impl IssueDetail {
                 .collect(),
         })
     }
+}
+
+/// Convert a GitHub GraphQL node ID (string) to a stable u64 for use as a database key.
+fn hash_node_id(node_id: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    node_id.hash(&mut hasher);
+    hasher.finish()
 }

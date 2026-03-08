@@ -25,6 +25,8 @@ enum Commands {
         #[command(subcommand)]
         action: Option<ConfigAction>,
     },
+    /// Sync GitHub data to local database
+    Sync,
     /// Generate an example config file (alias for `config`)
     #[command(hide = true)]
     Init,
@@ -52,6 +54,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Report { days } => cmd_report(days),
         Commands::Interactive => cmd_interactive(),
+        Commands::Sync => cmd_sync(),
         Commands::Config { action } => cmd_config(action),
         Commands::Init => cmd_config(None),
     }
@@ -59,10 +62,10 @@ fn main() -> Result<()> {
 
 fn cmd_report(days: i64) -> Result<()> {
     let config = ceo::config::Config::load()?;
-    let gh_runner = ceo::gh::RealGhRunner;
+    let conn = ceo::db::open_existing_db()?;
     let agent = ceo::agent::AgentKind::from_config(&config.agent);
 
-    let report_data = ceo::pipeline::run_pipeline(&config, &gh_runner, &agent, days)?;
+    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, days)?;
     let markdown = ceo::report::render_markdown(&report_data);
     print!("{markdown}");
     Ok(())
@@ -70,14 +73,30 @@ fn cmd_report(days: i64) -> Result<()> {
 
 fn cmd_interactive() -> Result<()> {
     let config = ceo::config::Config::load()?;
-    let gh_runner = ceo::gh::RealGhRunner;
+    let conn = ceo::db::open_existing_db()?;
     let agent = ceo::agent::AgentKind::from_config(&config.agent);
 
-    eprintln!("Fetching data and generating report...");
-    let report_data = ceo::pipeline::run_pipeline(&config, &gh_runner, &agent, 7)?;
+    eprintln!("Generating report from local database...");
+    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, 7)?;
     let markdown = ceo::report::render_markdown(&report_data);
 
     tui::run_tui(markdown)?;
+    Ok(())
+}
+
+fn cmd_sync() -> Result<()> {
+    let config = ceo::config::Config::load()?;
+    let gh_runner = ceo::gh::RealGhRunner;
+    let db_path = ceo::db::db_path();
+    let conn = ceo::db::open_db_at(&db_path)?;
+
+    eprintln!("Syncing to {}...", db_path.display());
+    let result = ceo::sync::run_sync(&config, &gh_runner, &conn)?;
+
+    for repo in &result.repos {
+        eprintln!("  {}: {} issues, {} comments", repo.name, repo.issues_synced, repo.comments_synced);
+    }
+    eprintln!("Sync complete.");
     Ok(())
 }
 

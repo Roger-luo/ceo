@@ -47,6 +47,26 @@ pub enum AgentError {
 }
 
 #[derive(Debug, thiserror::Error)]
+pub enum DbError {
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("Database not found at {0}. Run `ceo sync` first.")]
+    NotFound(std::path::PathBuf),
+    #[error("Failed to create data directory {path}")]
+    CreateDir { path: std::path::PathBuf, source: std::io::Error },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SyncError {
+    #[error(transparent)]
+    Gh(#[from] GhError),
+    #[error(transparent)]
+    Db(#[from] DbError),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
     #[error(transparent)]
     Gh(#[from] GhError),
@@ -54,4 +74,6 @@ pub enum PipelineError {
     Agent(#[from] AgentError),
     #[error(transparent)]
     Config(#[from] ConfigError),
+    #[error(transparent)]
+    Db(#[from] DbError),
 }

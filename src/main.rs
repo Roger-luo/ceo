@@ -276,6 +276,35 @@ fn cmd_config_wizard() -> Result<()> {
         });
     }
 
+    // Project
+    eprintln!("\n--- Project ---");
+    eprintln!("  GitHub Projects board for tracking issue status, dates, priority.");
+    if let Some(ref project) = config.project {
+        eprintln!("  Current: org={}, number={}", project.org, project.number);
+    } else {
+        eprintln!("  Not configured.");
+    }
+
+    let org_default = config.project.as_ref()
+        .map(|p| p.org.as_str())
+        .unwrap_or("");
+    let line = rl.readline(&format!("Project org [{}] (- to clear): ", if org_default.is_empty() { "none" } else { org_default }))?;
+    let line = line.trim();
+    if line == "-" {
+        config.project = None;
+    } else if !line.is_empty() {
+        let org = line.to_string();
+        let num_default = config.project.as_ref().map(|p| p.number).unwrap_or(0);
+        let num_line = rl.readline(&format!("Project number [{}]: ", num_default))?;
+        let num_line = num_line.trim();
+        let number = if num_line.is_empty() {
+            num_default
+        } else {
+            num_line.parse().context("Invalid number for project number")?
+        };
+        config.project = Some(ceo::config::ProjectConfig { org, number });
+    }
+
     config.save()?;
     let path = ceo::config::Config::config_path();
     eprintln!("\nConfig saved to {}", path.display());

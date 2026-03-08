@@ -133,3 +133,89 @@ name = "org/repo"
     let config: Config = toml::from_str(toml_str).unwrap();
     assert_eq!(config.agent.agent_type, "claude");
 }
+
+#[test]
+fn config_round_trip_serialize_deserialize() {
+    let config = Config::load_from_str(r#"
+[agent]
+type = "claude"
+command = "claude"
+timeout_secs = 120
+
+[[repos]]
+name = "org/frontend"
+labels_required = ["priority"]
+
+[[team]]
+github = "alice"
+name = "Alice Smith"
+role = "Lead"
+"#).unwrap();
+
+    let serialized = toml::to_string_pretty(&config).unwrap();
+    let reparsed: Config = toml::from_str(&serialized).unwrap();
+    assert_eq!(reparsed.agent.agent_type, "claude");
+    assert_eq!(reparsed.repos[0].name, "org/frontend");
+    assert_eq!(reparsed.team[0].github, "alice");
+}
+
+#[test]
+fn config_get_field() {
+    let config = Config::load_from_str(r#"
+[agent]
+type = "claude"
+timeout_secs = 120
+
+[[repos]]
+name = "org/frontend"
+"#).unwrap();
+
+    assert_eq!(config.get_field("agent.type").unwrap(), "claude");
+    assert_eq!(config.get_field("agent.timeout_secs").unwrap(), "120");
+}
+
+#[test]
+fn config_set_agent_field() {
+    let mut config = Config::load_from_str(r#"
+[[repos]]
+name = "org/repo"
+"#).unwrap();
+
+    config.set_field("agent.type", "codex").unwrap();
+    assert_eq!(config.agent.agent_type, "codex");
+
+    config.set_field("agent.timeout_secs", "60").unwrap();
+    assert_eq!(config.agent.timeout_secs, 60);
+
+    config.set_field("agent.command", "/usr/bin/codex").unwrap();
+    assert_eq!(config.agent.command, "/usr/bin/codex");
+
+    config.set_field("agent.args", "-q,--verbose").unwrap();
+    assert_eq!(config.agent.args, vec!["-q", "--verbose"]);
+}
+
+#[test]
+fn config_set_repos_add_remove() {
+    let mut config = Config::load_from_str(r#"
+[[repos]]
+name = "org/existing"
+"#).unwrap();
+
+    config.set_field("repos.add", "org/new-repo").unwrap();
+    assert_eq!(config.repos.len(), 2);
+    assert_eq!(config.repos[1].name, "org/new-repo");
+
+    config.set_field("repos.remove", "org/existing").unwrap();
+    assert_eq!(config.repos.len(), 1);
+    assert_eq!(config.repos[0].name, "org/new-repo");
+}
+
+#[test]
+fn config_get_field_unknown_key_errors() {
+    let config = Config::load_from_str(r#"
+[[repos]]
+name = "org/repo"
+"#).unwrap();
+
+    assert!(config.get_field("nonexistent.field").is_err());
+}

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
@@ -17,7 +17,7 @@ pub fn db_path() -> PathBuf {
 }
 
 /// Open (or create) the database at the given path and ensure schema exists.
-pub fn open_db_at(path: &PathBuf) -> Result<Connection> {
+pub fn open_db_at(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| DbError::CreateDir { path: parent.to_path_buf(), source: e })?;
@@ -35,10 +35,14 @@ pub fn open_db() -> Result<Connection> {
 /// Open an existing database. Returns NotFound if the file doesn't exist.
 pub fn open_existing_db() -> Result<Connection> {
     let path = db_path();
-    if !path.exists() {
-        return Err(DbError::NotFound(path));
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE;
+    match Connection::open_with_flags(&path, flags) {
+        Ok(conn) => {
+            create_schema(&conn)?;
+            Ok(conn)
+        }
+        Err(_) => Err(DbError::NotFound(path)),
     }
-    open_db_at(&path)
 }
 
 fn create_schema(conn: &Connection) -> Result<()> {

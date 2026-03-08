@@ -1,5 +1,4 @@
 use ceo::db;
-use std::path::PathBuf;
 
 #[test]
 fn open_db_creates_tables() {

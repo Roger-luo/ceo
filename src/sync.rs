@@ -199,7 +199,8 @@ pub fn run_sync(
                 map
             }
             Err(e) => {
-                log::info!("Failed to fetch project items: {e}");
+                log::warn!("Failed to fetch project items: {e}");
+                eprintln!("  Warning: Failed to fetch project board data: {e}");
                 HashMap::new()
             }
         }
@@ -222,11 +223,11 @@ pub fn run_sync(
         for issue in &issues {
             log::debug!("Fetching comments for {repo}#{}", issue.number);
             let detail = gh::fetch_issue_detail(gh_runner, repo, issue.number)?;
-            for (idx, comment) in detail.comments.into_iter().enumerate() {
+            for comment in detail.comments {
                 all_comments.push(CommentRow {
                     repo: repo.clone(),
                     issue_number: issue.number,
-                    comment_id: idx as u64,
+                    comment_id: comment.id,
                     author: comment.author,
                     body: comment.body,
                     created_at: comment.created_at.to_rfc3339(),

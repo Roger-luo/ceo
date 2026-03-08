@@ -26,6 +26,7 @@ pub struct IssueDetail {
 
 #[derive(Debug, Clone)]
 pub struct Comment {
+    pub id: u64,
     pub author: String,
     pub body: String,
     pub created_at: DateTime<Utc>,
@@ -63,6 +64,7 @@ struct GhIssueDetail {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GhComment {
+    id: u64,
     author: GhUser,
     body: String,
     created_at: DateTime<Utc>,
@@ -109,6 +111,7 @@ impl IssueDetail {
                 .comments
                 .into_iter()
                 .map(|c| Comment {
+                    id: c.id,
                     author: c.author.login,
                     body: c.body,
                     created_at: c.created_at,

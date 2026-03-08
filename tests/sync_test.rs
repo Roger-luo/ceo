@@ -27,6 +27,7 @@ impl GhRunner for MockSyncGh {
             return Ok(r#"{
                 "body": "Auth is broken",
                 "comments": [{
+                    "id": 1001,
                     "author": {"login": "bob"},
                     "body": "I can reproduce this",
                     "createdAt": "2026-03-02T10:00:00Z"
@@ -78,6 +79,7 @@ name = "org/repo"
 
     let comments = db::query_comments_for_issues(&conn, "org/repo", &[1]).unwrap();
     assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].comment_id, 1001);
     assert_eq!(comments[0].author, "bob");
 }
 

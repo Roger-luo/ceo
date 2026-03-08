@@ -236,10 +236,7 @@ pub fn open_existing_db() -> Result<Connection> {
     let path = db_path();
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE;
     match Connection::open_with_flags(&path, flags) {
-        Ok(conn) => {
-            create_schema(&conn)?;
-            Ok(conn)
-        }
+        Ok(conn) => Ok(conn),
         Err(_) => Err(DbError::NotFound(path)),
     }
 }

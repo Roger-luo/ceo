@@ -1,52 +1,10 @@
 use ceo::agent::Agent;
 use ceo::config::Config;
-use ceo::error::{AgentError, GhError};
-use ceo::gh::GhRunner;
+use ceo::db;
+use ceo::error::AgentError;
 use ceo::pipeline::run_pipeline;
 use ceo::prompt::Prompt;
 use ceo::report::render_markdown;
-
-struct MockGh;
-
-impl GhRunner for MockGh {
-    fn run_gh(&self, args: &[&str]) -> Result<String, GhError> {
-        if args.iter().any(|a| *a == "list") {
-            Ok(r#"[
-                {
-                    "number": 10,
-                    "title": "Add dark mode",
-                    "labels": [{"name": "feature"}, {"name": "priority"}],
-                    "assignees": [{"login": "alice"}],
-                    "updatedAt": "2026-03-05T10:00:00Z",
-                    "createdAt": "2026-02-25T10:00:00Z"
-                },
-                {
-                    "number": 11,
-                    "title": "Fix memory leak",
-                    "labels": [{"name": "bug"}],
-                    "assignees": [{"login": "bob"}],
-                    "updatedAt": "2026-03-04T10:00:00Z",
-                    "createdAt": "2026-02-28T10:00:00Z"
-                },
-                {
-                    "number": 12,
-                    "title": "Update docs",
-                    "labels": [],
-                    "assignees": [],
-                    "updatedAt": "2026-03-03T10:00:00Z",
-                    "createdAt": "2026-03-01T10:00:00Z"
-                }
-            ]"#.to_string())
-        } else {
-            Ok(r#"{
-                "body": "This issue needs triage.",
-                "comments": [
-                    {"author": {"login": "bob"}, "body": "I'll look into this.", "createdAt": "2026-03-03T12:00:00Z"}
-                ]
-            }"#.to_string())
-        }
-    }
-}
 
 struct MockAgent;
 
@@ -63,6 +21,71 @@ impl Agent for MockAgent {
 
 #[test]
 fn full_pipeline_produces_valid_markdown() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let conn = db::open_db_at(&db_path).unwrap();
+
+    // Seed issues
+    let issues = vec![
+        db::IssueRow {
+            repo: "org/frontend".to_string(),
+            number: 10,
+            title: "Add dark mode".to_string(),
+            body: Some("This issue needs triage.".to_string()),
+            state: Some("open".to_string()),
+            labels: r#"["feature","priority"]"#.to_string(),
+            assignees: r#"["alice"]"#.to_string(),
+            created_at: "2026-02-25T10:00:00Z".to_string(),
+            updated_at: "2026-03-05T10:00:00Z".to_string(),
+            project_status: None,
+            project_start_date: None,
+            project_target_date: None,
+            project_priority: None,
+        },
+        db::IssueRow {
+            repo: "org/frontend".to_string(),
+            number: 11,
+            title: "Fix memory leak".to_string(),
+            body: Some("This issue needs triage.".to_string()),
+            state: Some("open".to_string()),
+            labels: r#"["bug"]"#.to_string(),
+            assignees: r#"["bob"]"#.to_string(),
+            created_at: "2026-02-28T10:00:00Z".to_string(),
+            updated_at: "2026-03-04T10:00:00Z".to_string(),
+            project_status: None,
+            project_start_date: None,
+            project_target_date: None,
+            project_priority: None,
+        },
+        db::IssueRow {
+            repo: "org/frontend".to_string(),
+            number: 12,
+            title: "Update docs".to_string(),
+            body: Some("This issue needs triage.".to_string()),
+            state: Some("open".to_string()),
+            labels: r#"[]"#.to_string(),
+            assignees: r#"[]"#.to_string(),
+            created_at: "2026-03-01T10:00:00Z".to_string(),
+            updated_at: "2026-03-03T10:00:00Z".to_string(),
+            project_status: None,
+            project_start_date: None,
+            project_target_date: None,
+            project_priority: None,
+        },
+    ];
+    db::upsert_issues(&conn, &issues).unwrap();
+
+    // Seed comments
+    let comments = vec![db::CommentRow {
+        repo: "org/frontend".to_string(),
+        issue_number: 10,
+        comment_id: 0,
+        author: "bob".to_string(),
+        body: "I'll look into this.".to_string(),
+        created_at: "2026-03-03T12:00:00Z".to_string(),
+    }];
+    db::upsert_comments(&conn, &comments).unwrap();
+
     let config: Config = toml::from_str(r#"
         [[repos]]
         name = "org/frontend"
@@ -79,7 +102,7 @@ fn full_pipeline_produces_valid_markdown() {
         role = "Backend"
     "#).unwrap();
 
-    let report = run_pipeline(&config, &MockGh, &MockAgent, 7).unwrap();
+    let report = run_pipeline(&config, &conn, &MockAgent, 7).unwrap();
     let markdown = render_markdown(&report);
 
     assert!(markdown.contains("org/frontend"));

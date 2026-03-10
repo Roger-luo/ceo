@@ -397,21 +397,45 @@ fn fetch_commits_for_sync(
 
 /// Fetch contributor stats (weekly additions/deletions/commits per author)
 /// via the GitHub REST API. Returns one row per author per week.
+/// The API returns 202 while computing stats on first request; retries once after a delay.
 fn fetch_contributor_stats(
     gh_runner: &dyn GhRunner,
     repo: &str,
 ) -> std::result::Result<Vec<db::ContributorStatsRow>, GhError> {
     let endpoint = format!("repos/{repo}/stats/contributors");
-    let json = gh_runner.run_gh(&["api", &endpoint])?;
 
-    // The API returns 202 with a non-array body while computing stats — treat as empty
-    if json.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let value: serde_json::Value = serde_json::from_str(&json)?;
-    let parsed = match value.as_array() {
-        Some(arr) => arr,
-        None => return Ok(Vec::new()), // 202 response: stats not yet computed
+    // GitHub returns 202 with {} on first request while computing.
+    // Retry once after a short delay to get the actual data.
+    let parsed = {
+        let mut result = None;
+        for attempt in 0..2 {
+            let json = gh_runner.run_gh(&["api", &endpoint])?;
+            if json.trim().is_empty() {
+                if attempt == 0 {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    continue;
+                }
+                return Ok(Vec::new());
+            }
+            let value: serde_json::Value = serde_json::from_str(&json)?;
+            match value {
+                serde_json::Value::Array(arr) => {
+                    result = Some(arr);
+                    break;
+                }
+                _ => {
+                    if attempt == 0 {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        continue;
+                    }
+                    return Ok(Vec::new());
+                }
+            }
+        }
+        match result {
+            Some(arr) => arr,
+            None => return Ok(Vec::new()),
+        }
     };
     let mut rows = Vec::new();
 

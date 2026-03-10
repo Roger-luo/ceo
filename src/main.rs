@@ -25,6 +25,9 @@ enum Commands {
         /// Generate report for a specific month (YYYY-MM, e.g. 2026-03)
         #[arg(long)]
         month: Option<String>,
+        /// Executive summary template (executive, technical, standup, or custom name)
+        #[arg(long)]
+        template: Option<String>,
     },
     /// Launch interactive TUI mode
     Interactive,
@@ -94,7 +97,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Report { days, month } => cmd_report(days, month),
+        Commands::Report { days, month, template } => cmd_report(days, month, template),
         Commands::Interactive => cmd_interactive(),
         Commands::Sync => cmd_sync(),
         Commands::ClearCache => cmd_clear_cache(),
@@ -211,14 +214,14 @@ fn resolve_date_range(days: i64, month: Option<String>) -> Result<(String, Strin
     }
 }
 
-fn cmd_report(days: i64, month: Option<String>) -> Result<()> {
+fn cmd_report(days: i64, month: Option<String>, template: Option<String>) -> Result<()> {
     let config = ceo::config::Config::load()?;
     let conn = ceo::db::open_existing_db()?;
     let agent = ceo::agent::AgentKind::from_config(&config.agent);
     let progress = ReportProgress::new();
     let (since, label) = resolve_date_range(days, month)?;
 
-    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, &since, &label, &progress)?;
+    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, &since, &label, &progress, template.as_deref())?;
     let markdown = ceo::report::render_markdown(&report_data);
     print!("{markdown}");
     Ok(())
@@ -231,7 +234,7 @@ fn cmd_interactive() -> Result<()> {
     let progress = ReportProgress::new();
     let (since, label) = resolve_date_range(7, None)?;
 
-    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, &since, &label, &progress)?;
+    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, &since, &label, &progress, None)?;
     let markdown = ceo::report::render_markdown(&report_data);
 
     tui::run_tui(markdown)?;

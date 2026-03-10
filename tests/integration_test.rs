@@ -106,7 +106,7 @@ fn full_pipeline_produces_valid_markdown() {
     "#).unwrap();
 
     let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
-    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-06", &NullProgress).unwrap();
+    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-06", &NullProgress, None).unwrap();
     let markdown = render_markdown(&report);
 
     assert!(markdown.contains("org/frontend"));

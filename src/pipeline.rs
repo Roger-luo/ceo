@@ -97,6 +97,7 @@ fn summarize_issue(
     body: &str,
     issue_comments: &[CommentRow],
     comments_text: &str,
+    summary_length: &str,
 ) -> Result<String> {
     let linked_assignees: Vec<String> = issue.assignees.iter().map(|a| github_link(a)).collect();
     let discussion_hash = compute_discussion_hash(issue_comments);
@@ -119,6 +120,7 @@ fn summarize_issue(
                 title: issue.title.clone(),
                 comments: comments_text.to_string(),
                 previous_summary: Some(cache.discussion_summary),
+                summary_length: summary_length.to_string(),
             };
             let new_disc = agent.invoke(&disc_prompt).map_err(|e| {
                 eprintln!("  Error updating discussion #{}: {e}", issue.number);
@@ -140,6 +142,7 @@ fn summarize_issue(
                 labels: issue.labels.join(", "),
                 assignees: linked_assignees.join(", "),
                 body: body.to_string(),
+                summary_length: summary_length.to_string(),
             };
             let issue_sum = agent.invoke(&desc_prompt).map_err(|e| {
                 eprintln!("  Error summarizing #{}: {e}", issue.number);
@@ -155,6 +158,7 @@ fn summarize_issue(
                     title: issue.title.clone(),
                     comments: comments_text.to_string(),
                     previous_summary: None,
+                    summary_length: summary_length.to_string(),
                 };
                 agent.invoke(&disc_prompt).map_err(|e| {
                     eprintln!("  Error summarizing discussion #{}: {e}", issue.number);
@@ -179,9 +183,11 @@ pub fn run_pipeline(
     since: &str,
     date_label: &str,
     progress: &dyn PipelineProgress,
+    template: Option<&str>,
 ) -> Result<Report> {
     let cutoff = since.to_string();
     let roadmap = Roadmap::load();
+    let summary_length = config.summary_length();
     let mut repo_sections = Vec::new();
     let mut all_recent_issues = Vec::new();
 
@@ -233,6 +239,7 @@ pub fn run_pipeline(
 
             let summary = summarize_issue(
                 conn, agent, &repo_config.name, issue, &body, &issue_comments, &comments_text,
+                summary_length,
             )?;
             debug!("Issue #{} summary: {} chars", issue.number, summary.len());
 
@@ -398,9 +405,48 @@ pub fn run_pipeline(
         })
         .collect();
 
+    // Executive summary — aggregate all repo sections if a template is requested
+    let executive_summary = if let Some(template_name) = template {
+        let template_text = crate::prompt::resolve_template(template_name)
+            .ok_or_else(|| PipelineError::Agent(
+                crate::error::AgentError::ExitError(format!("Unknown template: {template_name}"))
+            ))?;
+
+        // Build text from all repo sections
+        let mut repo_text = String::new();
+        for section in &repo_sections {
+            use std::fmt::Write;
+            writeln!(repo_text, "## {}", section.name).unwrap();
+            if let Some(done) = &section.done {
+                writeln!(repo_text, "Done: {done}").unwrap();
+            }
+            if let Some(ip) = &section.in_progress {
+                writeln!(repo_text, "In Progress: {ip}").unwrap();
+            }
+            if let Some(next) = &section.next {
+                writeln!(repo_text, "Next: {next}").unwrap();
+            }
+            writeln!(repo_text).unwrap();
+        }
+
+        progress.phase("Generating executive summary...");
+        let prompt = crate::prompt::ExecutiveSummaryPrompt {
+            repo_summaries: repo_text,
+            template: template_text,
+        };
+        let summary = agent.invoke(&prompt).map_err(|e| {
+            eprintln!("  Error generating executive summary: {e}");
+            e
+        })?;
+        Some(summary)
+    } else {
+        None
+    };
+
     progress.finish();
     Ok(Report {
         date: date_label.to_string(),
+        executive_summary,
         repos: repo_sections,
         team_stats,
     })

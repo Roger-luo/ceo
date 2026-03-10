@@ -60,7 +60,7 @@ fn pipeline_reads_from_database() {
     "#).unwrap();
 
     let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
-    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress).unwrap();
+    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress, None).unwrap();
     assert_eq!(report.repos.len(), 1);
     assert_eq!(report.repos[0].name, "org/frontend");
     assert_eq!(report.repos[0].done.as_deref(), Some("Mock work completed."));
@@ -82,7 +82,7 @@ fn pipeline_handles_empty_database() {
     "#).unwrap();
 
     let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
-    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress).unwrap();
+    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress, None).unwrap();
     assert_eq!(report.repos.len(), 1);
     assert!(!report.repos[0].has_activity());
 }

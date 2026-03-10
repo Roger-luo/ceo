@@ -3,6 +3,7 @@ use ceo::report::{Report, RepoSection, FlaggedIssue, TeamStats, render_markdown,
 #[test]
 fn render_report_contains_header() {
     let report = Report {
+        executive_summary: None,
         date: "2026-03-06".to_string(),
         repos: vec![],
         team_stats: vec![],
@@ -14,6 +15,7 @@ fn render_report_contains_header() {
 #[test]
 fn render_report_with_repo_section() {
     let report = Report {
+        executive_summary: None,
         date: "2026-03-06".to_string(),
         repos: vec![RepoSection {
             name: "org/frontend".to_string(),
@@ -48,6 +50,7 @@ fn render_report_with_repo_section() {
 #[test]
 fn render_report_no_flagged_issues_omits_section() {
     let report = Report {
+        executive_summary: None,
         date: "2026-03-06".to_string(),
         repos: vec![RepoSection {
             name: "org/backend".to_string(),
@@ -65,6 +68,7 @@ fn render_report_no_flagged_issues_omits_section() {
 #[test]
 fn render_report_inactive_repos_as_compact_list() {
     let report = Report {
+        executive_summary: None,
         date: "2026-03-06".to_string(),
         repos: vec![
             RepoSection {
@@ -106,6 +110,7 @@ fn render_report_inactive_repos_as_compact_list() {
 #[test]
 fn render_report_inactive_team_members_listed_separately() {
     let report = Report {
+        executive_summary: None,
         date: "2026-03-06".to_string(),
         repos: vec![],
         team_stats: vec![

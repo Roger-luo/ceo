@@ -15,6 +15,7 @@ pub struct IssueDescriptionPrompt {
     pub labels: String,
     pub assignees: String,
     pub body: String,
+    pub summary_length: String,
 }
 
 impl Prompt for IssueDescriptionPrompt {
@@ -22,7 +23,7 @@ impl Prompt for IssueDescriptionPrompt {
 
     fn render(&self) -> String {
         format!(
-            "Summarize what this GitHub {} is about in 1-2 sentences. \
+            "Summarize what this GitHub {} is about in {}. \
              Focus on the purpose and scope — do NOT summarize any discussion or comments.\n\
              All information you need is provided below — do NOT attempt to fetch data \
              from GitHub or any external source.\n\
@@ -33,7 +34,7 @@ impl Prompt for IssueDescriptionPrompt {
              Labels: {}\n\
              Assignees: {}\n\n\
              Description:\n{}",
-            self.kind, self.repo,
+            self.kind, self.summary_length, self.repo,
             if self.kind == "pr" { "PR" } else { "Issue" },
             self.number, self.title,
             self.labels, self.assignees,
@@ -50,6 +51,7 @@ pub struct DiscussionSummaryPrompt {
     pub title: String,
     pub comments: String,
     pub previous_summary: Option<String>,
+    pub summary_length: String,
 }
 
 impl Prompt for DiscussionSummaryPrompt {
@@ -65,7 +67,7 @@ impl Prompt for DiscussionSummaryPrompt {
             None => String::new(),
         };
         format!(
-            "Summarize the discussion and recent activity on this GitHub issue/PR in 2-3 sentences.\n\
+            "Summarize the discussion and recent activity on this GitHub issue/PR in {}.\n\
              All information you need is provided below — do NOT attempt to fetch data \
              from GitHub or any external source.\n\
              When mentioning GitHub users, preserve the [@handle](https://github.com/handle) \
@@ -74,7 +76,7 @@ impl Prompt for DiscussionSummaryPrompt {
              #{}: {}\n\n\
              Comments:\n{}{}\n\n\
              Focus on decisions made, blockers raised, and current status of the discussion.",
-            self.repo, self.number, self.title,
+            self.summary_length, self.repo, self.number, self.title,
             self.comments, previous_section
         )
     }
@@ -156,4 +158,55 @@ impl Prompt for IssueTriagePrompt {
             self.title, self.body, self.comments
         )
     }
+}
+
+/// Cross-repo executive summary produced from all per-repo summaries.
+pub struct ExecutiveSummaryPrompt {
+    /// All repo sections rendered as text (repo name + done/in_progress/next).
+    pub repo_summaries: String,
+    /// The template instructions (built-in or user-provided).
+    pub template: String,
+}
+
+impl Prompt for ExecutiveSummaryPrompt {
+    fn kind(&self) -> &str { "summary" }
+
+    fn render(&self) -> String {
+        format!(
+            "{}\n\n\
+             All information you need is provided below — do NOT fetch external data.\n\
+             Preserve [@handle](https://github.com/handle) link format.\n\n\
+             Per-repo summaries:\n{}",
+            self.template, self.repo_summaries
+        )
+    }
+}
+
+/// Built-in executive summary templates, embedded at compile time.
+pub fn builtin_templates() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("executive", include_str!("templates/executive.md")),
+        ("technical", include_str!("templates/technical.md")),
+        ("standup", include_str!("templates/standup.md")),
+    ]
+}
+
+/// Resolve a template by name: check built-in templates first, then user templates dir.
+pub fn resolve_template(name: &str) -> Option<String> {
+    // Built-in
+    for (builtin_name, content) in builtin_templates() {
+        if builtin_name == name {
+            return Some(content.to_string());
+        }
+    }
+
+    // User templates: ~/.config/ceo/templates/<name>.txt
+    if let Some(config_dir) = dirs::config_dir() {
+        let path = config_dir.join("ceo").join("templates").join(format!("{name}.txt"));
+        if path.exists() {
+            return std::fs::read_to_string(&path).ok();
+        }
+    }
+
+    None
 }

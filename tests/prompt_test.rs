@@ -40,6 +40,7 @@ fn issue_description_prompt_renders_without_comments() {
         labels: "feature, ui".to_string(),
         assignees: "alice".to_string(),
         body: "We need dark mode support.".to_string(),
+        summary_length: "1-2 sentences".to_string(),
     };
     let rendered = prompt.render();
     assert!(rendered.contains("org/frontend"));
@@ -59,6 +60,7 @@ fn discussion_summary_prompt_renders_with_comments() {
         title: "Add dark mode".to_string(),
         comments: "bob: I can help with CSS.".to_string(),
         previous_summary: None,
+        summary_length: "2-3 sentences".to_string(),
     };
     let rendered = prompt.render();
     assert!(rendered.contains("#42"));
@@ -74,6 +76,7 @@ fn discussion_summary_prompt_includes_previous_when_updating() {
         title: "Add dark mode".to_string(),
         comments: "bob: Updated the PR.".to_string(),
         previous_summary: Some("Bob offered to help with CSS.".to_string()),
+        summary_length: "2-3 sentences".to_string(),
     };
     let rendered = prompt.render();
     assert!(rendered.contains("Bob offered to help with CSS."));

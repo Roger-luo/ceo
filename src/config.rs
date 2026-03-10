@@ -19,6 +19,10 @@ pub struct Config {
     /// Preferred editor for `ceo roadmap edit` etc. Falls back to $EDITOR, then "vi".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editor: Option<String>,
+    /// Per-issue summary length guidance (e.g. "1 sentence", "2-3 sentences", "50 words max").
+    /// Default: "1-2 sentences".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_length: Option<String>,
 }
 
 // --- Per-agent-type config structs ---
@@ -419,6 +423,7 @@ impl Config {
                 _ => Err(ConfigError::UnknownKey("agent.args (generic only)".to_string())),
             },
             "editor" => Ok(self.editor.clone().unwrap_or_default()),
+            "summary_length" => Ok(self.summary_length.clone().unwrap_or_default()),
             "project.org" => self.project.as_ref()
                 .map(|p| p.org.clone())
                 .ok_or_else(|| ConfigError::UnknownKey("project.org (not configured)".to_string())),
@@ -570,6 +575,9 @@ impl Config {
             "editor" => {
                 self.editor = if value.is_empty() { None } else { Some(value.to_string()) };
             }
+            "summary_length" => {
+                self.summary_length = if value.is_empty() { None } else { Some(value.to_string()) };
+            }
             _ => return Err(ConfigError::UnknownKey(key.to_string())),
         }
         Ok(())
@@ -580,6 +588,11 @@ impl Config {
         self.editor.clone()
             .or_else(|| std::env::var("EDITOR").ok())
             .unwrap_or_else(|| "vi".to_string())
+    }
+
+    /// Resolve summary length guidance for per-issue prompts.
+    pub fn summary_length(&self) -> &str {
+        self.summary_length.as_deref().unwrap_or("1-2 sentences")
     }
 
     fn find_config_path() -> Option<PathBuf> {

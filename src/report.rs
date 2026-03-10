@@ -18,6 +18,7 @@ pub fn extract_xml_tag(text: &str, tag: &str) -> Option<String> {
 
 pub struct Report {
     pub date: String,
+    pub executive_summary: Option<String>,
     pub repos: Vec<RepoSection>,
     pub team_stats: Vec<TeamStats>,
 }
@@ -53,6 +54,12 @@ pub struct TeamStats {
 pub fn render_markdown(report: &Report) -> String {
     let mut out = String::new();
     writeln!(out, "# Project Report — {}\n", report.date).unwrap();
+
+    // Executive summary (if generated)
+    if let Some(summary) = &report.executive_summary {
+        writeln!(out, "{summary}\n").unwrap();
+        writeln!(out, "---\n").unwrap();
+    }
 
     // Split repos into active and inactive
     let active: Vec<&RepoSection> = report.repos.iter()

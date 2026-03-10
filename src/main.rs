@@ -149,6 +149,22 @@ impl ReportProgress {
 }
 
 impl PipelineProgress for ReportProgress {
+    fn task_start(&self, name: &str, step_count: usize) {
+        if step_count > 0 {
+            self.set_bar(step_count as u64, name.to_string());
+        } else {
+            self.set_spinner(name.to_string());
+        }
+    }
+
+    fn task_done(&self, name: &str) {
+        let mut guard = self.bar.lock().unwrap();
+        if let Some(pb) = guard.take() {
+            pb.finish_and_clear();
+        }
+        eprintln!("  ✓ {name}");
+    }
+
     fn repo_start(&self, repo: &str, issue_count: usize) {
         if issue_count == 0 {
             self.set_spinner(format!("{repo}: no recent issues"));

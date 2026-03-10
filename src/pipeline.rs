@@ -74,6 +74,7 @@ fn row_to_issue(row: &IssueRow) -> Issue {
         number: row.number,
         title: row.title.clone(),
         kind: row.kind.clone(),
+        state: row.state.clone().unwrap_or_else(|| "OPEN".to_string()),
         labels,
         assignees,
         updated_at: chrono::DateTime::parse_from_rfc3339(&row.updated_at)
@@ -392,15 +393,17 @@ pub fn run_pipeline(
         .team
         .iter()
         .map(|member| {
-            let active = all_recent_issues
+            let assigned: Vec<_> = all_recent_issues
                 .iter()
                 .filter(|i| i.assignees.contains(&member.github))
-                .count();
+                .collect();
+            let active = assigned.iter().filter(|i| i.state.eq_ignore_ascii_case("OPEN")).count();
+            let closed_this_week = assigned.iter().filter(|i| i.state.eq_ignore_ascii_case("CLOSED")).count();
             TeamStats {
                 name: member.name.clone(),
                 github: member.github.clone(),
                 active,
-                closed_this_week: 0,
+                closed_this_week,
             }
         })
         .collect();

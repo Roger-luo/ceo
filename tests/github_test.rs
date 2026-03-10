@@ -58,6 +58,7 @@ fn issue_missing_required_labels() {
         number: 1,
         title: "Test".into(),
         kind: "issue".into(),
+        state: "OPEN".into(),
         labels: vec!["bug".into()],
         assignees: vec![],
         updated_at: Utc::now(),

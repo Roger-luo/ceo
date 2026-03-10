@@ -51,6 +51,9 @@ pub struct PipelineContext<'a> {
     pub commit_logs: HashMap<String, String>,
     pub commit_rows: HashMap<String, Vec<crate::db::CommitRow>>,
 
+    // Per-repo contributor stats populated by FetchDataTask
+    pub contributor_stats: HashMap<String, Vec<crate::db::ContributorStatsRow>>,
+
     // Final outputs
     pub repo_sections: Vec<RepoSection>,
     pub all_recent_issues: Vec<Issue>,
@@ -83,6 +86,7 @@ impl<'a> PipelineContext<'a> {
             per_issue_summaries: HashMap::new(),
             commit_logs: HashMap::new(),
             commit_rows: HashMap::new(),
+            contributor_stats: HashMap::new(),
             repo_sections: Vec::new(),
             all_recent_issues: Vec::new(),
             team_stats: Vec::new(),

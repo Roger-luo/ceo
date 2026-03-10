@@ -40,11 +40,24 @@ impl Task for TeamStatsTask {
                             (open, closed)
                         }
                     });
+
+                // Aggregate additions/deletions across all repos
+                let (additions, deletions) = ctx
+                    .contributor_stats
+                    .values()
+                    .flat_map(|rows| rows.iter())
+                    .filter(|row| row.author == member.github)
+                    .fold((0i64, 0i64), |(a, d), row| {
+                        (a + row.additions, d + row.deletions)
+                    });
+
                 TeamStats {
                     name: member.name.clone(),
                     github: member.github.clone(),
                     active,
                     closed_this_week,
+                    additions,
+                    deletions,
                 }
             })
             .collect();

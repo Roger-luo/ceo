@@ -49,6 +49,8 @@ pub struct TeamStats {
     pub github: String,
     pub active: usize,
     pub closed_this_week: usize,
+    pub additions: i64,
+    pub deletions: i64,
 }
 
 pub fn render_markdown(report: &Report) -> String {

@@ -34,6 +34,8 @@ fn render_report_with_repo_section() {
             github: "alice".to_string(),
             active: 5,
             closed_this_week: 2,
+            additions: 0,
+            deletions: 0,
         }],
     };
     let md = render_markdown(&report);
@@ -114,8 +116,8 @@ fn render_report_inactive_team_members_listed_separately() {
         date: "2026-03-06".to_string(),
         repos: vec![],
         team_stats: vec![
-            TeamStats { name: "Alice".to_string(), github: "alice".to_string(), active: 3, closed_this_week: 1 },
-            TeamStats { name: "Bob".to_string(), github: "bob".to_string(), active: 0, closed_this_week: 0 },
+            TeamStats { name: "Alice".to_string(), github: "alice".to_string(), active: 3, closed_this_week: 1, additions: 0, deletions: 0 },
+            TeamStats { name: "Bob".to_string(), github: "bob".to_string(), active: 0, closed_this_week: 0, additions: 0, deletions: 0 },
         ],
     };
     let md = render_markdown(&report);

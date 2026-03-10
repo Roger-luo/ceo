@@ -94,6 +94,21 @@ impl Task for FetchDataTask {
 
             ctx.commit_rows
                 .insert(repo_config.name.clone(), commit_rows);
+
+            // Query contributor stats for this repo.
+            // `since` is RFC 3339 but week_start is a plain date; truncate to YYYY-MM-DD.
+            let since_date = &ctx.since[..10];
+            let repo_names_for_stats = vec![repo_config.name.clone()];
+            let cs_rows =
+                db::query_contributor_stats(ctx.conn, &repo_names_for_stats, since_date)?;
+            debug!(
+                "Found {} contributor stat rows for {}",
+                cs_rows.len(),
+                repo_config.name
+            );
+            ctx.contributor_stats
+                .insert(repo_config.name.clone(), cs_rows);
+
             ctx.issues.insert(repo_config.name.clone(), issues);
             ctx.issue_rows.insert(repo_config.name.clone(), issue_rows);
         }

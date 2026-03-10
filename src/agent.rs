@@ -186,19 +186,20 @@ async fn run_cli_agent(command: &str, args: &[&str], prompt_text: &str) -> Resul
         .spawn()
         .map_err(|e| AgentError::NotFound { command: command.to_string(), source: e })?;
 
-    // Write prompt via stdin to avoid OS argument length limits
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        stdin.write_all(prompt_text.as_bytes())
-            .await
-            .map_err(AgentError::OutputRead)?;
-        // stdin is dropped here, closing the pipe
-    }
+    // Write prompt via stdin and read output concurrently to avoid deadlock.
+    // If stdin write blocks (large prompt fills pipe buffer) while child tries
+    // to write stdout/stderr, both sides stall. tokio::join! prevents this.
+    let mut stdin = child.stdin.take();
+    let write_stdin = async {
+        if let Some(ref mut stdin) = stdin {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(prompt_text.as_bytes()).await;
+        }
+        drop(stdin); // close the pipe so child sees EOF
+    };
 
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(AgentError::OutputRead)?;
+    let (_, output) = tokio::join!(write_stdin, child.wait_with_output());
+    let output = output.map_err(AgentError::OutputRead)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

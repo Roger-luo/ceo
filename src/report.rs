@@ -37,6 +37,41 @@ pub fn expand_github_tags(text: &str, repo: &str) -> String {
     result
 }
 
+/// Extract all `<summary id="N">...</summary>` tags from a batch response.
+/// Returns a vec of (issue_number, summary_text) tuples.
+pub fn extract_all_summary_tags(text: &str) -> Vec<(u64, String)> {
+    let mut results = Vec::new();
+    let mut search_from = 0;
+    let open_prefix = "<summary id=\"";
+
+    while let Some(tag_start) = text[search_from..].find(open_prefix) {
+        let abs_start = search_from + tag_start;
+        let after_prefix = abs_start + open_prefix.len();
+
+        let Some(quote_end) = text[after_prefix..].find('"') else { break };
+        let id_str = &text[after_prefix..after_prefix + quote_end];
+        let Ok(id) = id_str.parse::<u64>() else {
+            search_from = after_prefix;
+            continue;
+        };
+
+        let after_id = after_prefix + quote_end + 1;
+        let Some(gt_offset) = text[after_id..].find('>') else { break };
+        let content_start = after_id + gt_offset + 1;
+
+        let close_tag = "</summary>";
+        let Some(close_offset) = text[content_start..].find(close_tag) else { break };
+        let content = text[content_start..content_start + close_offset].trim();
+        if !content.is_empty() {
+            results.push((id, content.to_string()));
+        }
+
+        search_from = content_start + close_offset + close_tag.len();
+    }
+
+    results
+}
+
 /// Extract the text content of an XML tag from a string.
 /// Returns `None` if the tag is not found.
 pub fn extract_xml_tag(text: &str, tag: &str) -> Option<String> {

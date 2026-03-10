@@ -23,6 +23,12 @@ pub struct Config {
     /// Default: "1-2 sentences".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_length: Option<String>,
+    /// Number of issues to batch into a single LLM description call. Default: 10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<usize>,
+    /// Maximum number of concurrent agent calls. Default: 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<usize>,
 }
 
 // --- Per-agent-type config structs ---
@@ -424,6 +430,8 @@ impl Config {
             },
             "editor" => Ok(self.editor.clone().unwrap_or_default()),
             "summary_length" => Ok(self.summary_length.clone().unwrap_or_default()),
+            "batch_size" => Ok(self.batch_size().to_string()),
+            "concurrency" => Ok(self.concurrency().to_string()),
             "project.org" => self.project.as_ref()
                 .map(|p| p.org.clone())
                 .ok_or_else(|| ConfigError::UnknownKey("project.org (not configured)".to_string())),
@@ -578,6 +586,20 @@ impl Config {
             "summary_length" => {
                 self.summary_length = if value.is_empty() { None } else { Some(value.to_string()) };
             }
+            "batch_size" => {
+                let n: usize = value.parse().map_err(|_| ConfigError::InvalidValue {
+                    key: key.to_string(),
+                    message: format!("expected positive integer, got: {value}"),
+                })?;
+                self.batch_size = if n == 10 { None } else { Some(n) };
+            }
+            "concurrency" => {
+                let n: usize = value.parse().map_err(|_| ConfigError::InvalidValue {
+                    key: key.to_string(),
+                    message: format!("expected positive integer, got: {value}"),
+                })?;
+                self.concurrency = if n == 4 { None } else { Some(n) };
+            }
             _ => return Err(ConfigError::UnknownKey(key.to_string())),
         }
         Ok(())
@@ -593,6 +615,16 @@ impl Config {
     /// Resolve summary length guidance for per-issue prompts.
     pub fn summary_length(&self) -> &str {
         self.summary_length.as_deref().unwrap_or("1-2 sentences")
+    }
+
+    /// Number of issues to batch per LLM description call.
+    pub fn batch_size(&self) -> usize {
+        self.batch_size.unwrap_or(10)
+    }
+
+    /// Maximum concurrent agent calls.
+    pub fn concurrency(&self) -> usize {
+        self.concurrency.unwrap_or(4)
     }
 
     fn find_config_path() -> Option<PathBuf> {

@@ -43,6 +43,57 @@ impl Prompt for IssueDescriptionPrompt {
     }
 }
 
+/// Batch-summarize multiple issue descriptions in a single LLM call.
+/// Returns XML-tagged summaries: `<summary id="N">...</summary>` per issue.
+pub struct BatchIssueDescriptionPrompt {
+    pub issues: Vec<BatchIssueEntry>,
+    pub summary_length: String,
+}
+
+pub struct BatchIssueEntry {
+    pub repo: String,
+    pub number: u64,
+    pub title: String,
+    pub kind: String,
+    pub labels: String,
+    pub assignees: String,
+    pub body: String,
+}
+
+impl Prompt for BatchIssueDescriptionPrompt {
+    fn kind(&self) -> &str { "summary" }
+
+    fn render(&self) -> String {
+        let mut out = format!(
+            "Summarize each of the following GitHub issues/PRs in {}. \
+             Focus on purpose and scope — do NOT summarize discussion or comments.\n\
+             All information you need is provided below — do NOT fetch external data.\n\
+             When referencing GitHub entities, use short tags: \
+             <gh>handle</gh> for users, <issue>N</issue> for issues, <pr>N</pr> for PRs.\n\n\
+             Respond with exactly one <summary id=\"N\">...</summary> tag per issue, \
+             where N is the issue number.\n\n",
+            self.summary_length
+        );
+        for entry in &self.issues {
+            let kind_label = if entry.kind == "pr" { "PR" } else { "Issue" };
+            out.push_str(&format!(
+                "<issue id=\"{}\">\n\
+                 Repo: {}\n\
+                 {} #{}: {}\n\
+                 Labels: {}\n\
+                 Assignees: {}\n\
+                 Description:\n{}\n\
+                 </issue>\n\n",
+                entry.number, entry.repo,
+                kind_label, entry.number, entry.title,
+                entry.labels, entry.assignees,
+                entry.body,
+            ));
+        }
+        out
+    }
+}
+
 /// Summarize the discussion on an issue/PR.
 /// When previous_summary is provided, the agent updates it incrementally.
 pub struct DiscussionSummaryPrompt {

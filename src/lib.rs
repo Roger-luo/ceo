@@ -10,3 +10,4 @@ pub mod prompt;
 pub mod report;
 pub mod roadmap;
 pub mod sync;
+pub mod tasks;

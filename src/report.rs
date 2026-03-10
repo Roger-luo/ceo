@@ -109,20 +109,22 @@ pub fn render_markdown(report: &Report) -> String {
     if !report.team_stats.is_empty() {
         // Filter out team members with zero activity
         let active_members: Vec<&TeamStats> = report.team_stats.iter()
-            .filter(|m| m.active > 0 || m.closed_this_week > 0)
+            .filter(|m| m.active > 0 || m.closed_this_week > 0 || m.additions > 0 || m.deletions > 0)
             .collect();
         let inactive_members: Vec<&TeamStats> = report.team_stats.iter()
-            .filter(|m| m.active == 0 && m.closed_this_week == 0)
+            .filter(|m| m.active == 0 && m.closed_this_week == 0 && m.additions == 0 && m.deletions == 0)
             .collect();
 
         writeln!(out, "## Team Overview\n").unwrap();
-        writeln!(out, "| Person | Active | Closed |").unwrap();
-        writeln!(out, "|--------|--------|--------|").unwrap();
+        writeln!(out, "| Person | Active | Closed | Lines |").unwrap();
+        writeln!(out, "|--------|--------|--------|-------|").unwrap();
         for member in &active_members {
             writeln!(
                 out,
-                "| {} ({}) | {} | {} |",
-                member.name, github_link(&member.github), member.active, member.closed_this_week
+                "| {} ({}) | {} | {} | +{} / -{} |",
+                member.name, github_link(&member.github),
+                member.active, member.closed_this_week,
+                member.additions, member.deletions
             ).unwrap();
         }
         if !inactive_members.is_empty() {

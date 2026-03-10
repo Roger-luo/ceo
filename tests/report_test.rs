@@ -166,3 +166,50 @@ fn has_activity_detects_active_and_inactive() {
     assert!(active.has_activity());
     assert!(!inactive.has_activity());
 }
+
+#[test]
+fn render_report_team_stats_includes_lines() {
+    let report = Report {
+        executive_summary: None,
+        date: "2026-03-10".to_string(),
+        repos: vec![],
+        team_stats: vec![
+            TeamStats {
+                name: "Alice".to_string(),
+                github: "alice".to_string(),
+                active: 3,
+                closed_this_week: 1,
+                additions: 500,
+                deletions: 120,
+            },
+        ],
+    };
+    let md = render_markdown(&report);
+    assert!(md.contains("+500"));
+    assert!(md.contains("-120"));
+}
+
+#[test]
+fn render_report_inactive_member_with_lines_shown_as_active() {
+    // A member with 0 issues but nonzero lines should appear in the active table
+    let report = Report {
+        executive_summary: None,
+        date: "2026-03-10".to_string(),
+        repos: vec![],
+        team_stats: vec![
+            TeamStats {
+                name: "Carol".to_string(),
+                github: "carol".to_string(),
+                active: 0,
+                closed_this_week: 0,
+                additions: 200,
+                deletions: 50,
+            },
+        ],
+    };
+    let md = render_markdown(&report);
+    // Carol has lines of code, so should NOT be in the "No activity" list
+    assert!(md.contains("Carol"));
+    assert!(md.contains("+200"));
+    assert!(!md.contains("No activity:"));
+}

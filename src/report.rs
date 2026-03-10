@@ -5,6 +5,38 @@ pub fn github_link(handle: &str) -> String {
     format!("[@{handle}](https://github.com/{handle})")
 }
 
+/// Expand short GitHub reference tags in LLM output to full markdown links.
+///
+/// Tags:
+/// - `<gh>handle</gh>` → `[@handle](https://github.com/handle)`
+/// - `<issue>64</issue>` → `[#64](https://github.com/{repo}/issues/64)`
+/// - `<pr>32</pr>` → `[#32](https://github.com/{repo}/pull/32)`
+pub fn expand_github_tags(text: &str, repo: &str) -> String {
+    let mut result = text.to_string();
+    // Process each tag type by scanning for open/close pairs
+    for (open_tag, close_tag, fmt_fn) in [
+        ("<gh>", "</gh>", Box::new(|inner: &str, _repo: &str| {
+            format!("[@{inner}](https://github.com/{inner})")
+        }) as Box<dyn Fn(&str, &str) -> String>),
+        ("<issue>", "</issue>", Box::new(|inner: &str, repo: &str| {
+            format!("[#{inner}](https://github.com/{repo}/issues/{inner})")
+        }) as Box<dyn Fn(&str, &str) -> String>),
+        ("<pr>", "</pr>", Box::new(|inner: &str, repo: &str| {
+            format!("[#{inner}](https://github.com/{repo}/pull/{inner})")
+        }) as Box<dyn Fn(&str, &str) -> String>),
+    ] {
+        loop {
+            let Some(start) = result.find(open_tag) else { break };
+            let after_open = start + open_tag.len();
+            let Some(end_offset) = result[after_open..].find(close_tag) else { break };
+            let inner = result[after_open..after_open + end_offset].trim();
+            let replacement = fmt_fn(inner, repo);
+            result.replace_range(start..after_open + end_offset + close_tag.len(), &replacement);
+        }
+    }
+    result
+}
+
 /// Extract the text content of an XML tag from a string.
 /// Returns `None` if the tag is not found.
 pub fn extract_xml_tag(text: &str, tag: &str) -> Option<String> {
@@ -57,9 +89,9 @@ pub fn render_markdown(report: &Report) -> String {
     let mut out = String::new();
     writeln!(out, "# Project Report — {}\n", report.date).unwrap();
 
-    // Executive summary (if generated)
+    // Executive summary (if generated) — expand <gh> tags only (no repo context)
     if let Some(summary) = &report.executive_summary {
-        writeln!(out, "{summary}\n").unwrap();
+        writeln!(out, "{}\n", expand_github_tags(summary, "")).unwrap();
         writeln!(out, "---\n").unwrap();
     }
 
@@ -72,15 +104,16 @@ pub fn render_markdown(report: &Report) -> String {
         .collect();
 
     for repo in &active {
+        let expand = |text: &str| expand_github_tags(text, &repo.name);
         writeln!(out, "## {}\n", repo.name).unwrap();
         if let Some(done) = &repo.done {
-            writeln!(out, "**Done:** {}\n", done).unwrap();
+            writeln!(out, "**Done:** {}\n", expand(done)).unwrap();
         }
         if let Some(ip) = &repo.in_progress {
-            writeln!(out, "**In Progress:** {}\n", ip).unwrap();
+            writeln!(out, "**In Progress:** {}\n", expand(ip)).unwrap();
         }
         if let Some(next) = &repo.next {
-            writeln!(out, "**Next:** {}\n", next).unwrap();
+            writeln!(out, "**Next:** {}\n", expand(next)).unwrap();
         }
 
         if !repo.flagged_issues.is_empty() {
@@ -90,7 +123,7 @@ pub fn render_markdown(report: &Report) -> String {
                 writeln!(
                     out,
                     "- **#{}** \"{}\" — missing {} label. *{}*",
-                    issue.number, issue.title, missing, issue.summary
+                    issue.number, issue.title, missing, expand(&issue.summary)
                 ).unwrap();
             }
             writeln!(out).unwrap();

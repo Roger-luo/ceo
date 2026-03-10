@@ -27,8 +27,8 @@ impl Prompt for IssueDescriptionPrompt {
              Focus on the purpose and scope — do NOT summarize any discussion or comments.\n\
              All information you need is provided below — do NOT attempt to fetch data \
              from GitHub or any external source.\n\
-             When mentioning GitHub users, preserve the [@handle](https://github.com/handle) \
-             link format used in the data below.\n\n\
+             When referencing GitHub entities, use short tags: \
+             <gh>handle</gh> for users, <issue>N</issue> for issues, <pr>N</pr> for PRs.\n\n\
              Repo: {}\n\
              {} #{}: {}\n\
              Labels: {}\n\
@@ -70,8 +70,8 @@ impl Prompt for DiscussionSummaryPrompt {
             "Summarize the discussion and recent activity on this GitHub issue/PR in {}.\n\
              All information you need is provided below — do NOT attempt to fetch data \
              from GitHub or any external source.\n\
-             When mentioning GitHub users, preserve the [@handle](https://github.com/handle) \
-             link format used in the data below.\n\n\
+             When referencing GitHub entities, use short tags: \
+             <gh>handle</gh> for users, <issue>N</issue> for issues, <pr>N</pr> for PRs.\n\n\
              Repo: {}\n\
              #{}: {}\n\n\
              Comments:\n{}{}\n\n\
@@ -125,7 +125,7 @@ impl Prompt for WeeklySummaryPrompt {
         format!(
             "Write a concise summary for repo {}.\n\
              All information you need is provided below — do NOT fetch external data.\n\
-             Preserve [@handle](https://github.com/handle) link format.\n\n\
+             Use short tags: <gh>handle</gh> for users, <issue>N</issue> for issues, <pr>N</pr> for PRs.\n\n\
              Issue/PR activity:\n{}{}{}{}\n\n\
              IMPORTANT: Summarize ALL activity — both issues/PRs AND direct commits. \
              Some branches have no PRs and only commits; their work is equally important. \
@@ -180,7 +180,7 @@ impl Prompt for ExecutiveSummaryPrompt {
         format!(
             "{}\n\n\
              All information you need is provided below — do NOT fetch external data.\n\
-             Preserve [@handle](https://github.com/handle) link format.\n\n\
+             Use short tags: <gh>handle</gh> for users, <issue>N</issue> for issues, <pr>N</pr> for PRs.\n\n\
              Per-repo summaries:\n{}",
             self.template, self.repo_summaries
         )

@@ -1,4 +1,4 @@
-use ceo::report::{Report, RepoSection, FlaggedIssue, TeamStats, render_markdown, extract_xml_tag};
+use ceo::report::{Report, RepoSection, FlaggedIssue, TeamStats, render_markdown, extract_xml_tag, expand_github_tags};
 
 #[test]
 fn render_report_contains_header() {
@@ -212,4 +212,41 @@ fn render_report_inactive_member_with_lines_shown_as_active() {
     assert!(md.contains("Carol"));
     assert!(md.contains("+200"));
     assert!(!md.contains("No activity:"));
+}
+
+#[test]
+fn expand_github_tags_replaces_all_tag_types() {
+    let text = "Fixed by <gh>alice</gh> in <pr>42</pr>, see <issue>10</issue> for context.";
+    let result = expand_github_tags(text, "org/repo");
+    assert_eq!(
+        result,
+        "Fixed by [@alice](https://github.com/alice) in [#42](https://github.com/org/repo/pull/42), see [#10](https://github.com/org/repo/issues/10) for context."
+    );
+}
+
+#[test]
+fn expand_github_tags_handles_no_tags() {
+    let text = "No tags here.";
+    assert_eq!(expand_github_tags(text, "org/repo"), "No tags here.");
+}
+
+#[test]
+fn expand_github_tags_in_rendered_report() {
+    let report = Report {
+        executive_summary: None,
+        date: "2026-03-10".to_string(),
+        repos: vec![RepoSection {
+            name: "org/repo".to_string(),
+            done: Some("Merged <pr>42</pr> by <gh>alice</gh>.".to_string()),
+            in_progress: None,
+            next: None,
+            flagged_issues: vec![],
+        }],
+        team_stats: vec![],
+    };
+    let md = render_markdown(&report);
+    assert!(md.contains("[#42](https://github.com/org/repo/pull/42)"));
+    assert!(md.contains("[@alice](https://github.com/alice)"));
+    assert!(!md.contains("<pr>"));
+    assert!(!md.contains("<gh>"));
 }

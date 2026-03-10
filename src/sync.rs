@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
 
 use crate::config::Config;
-use crate::db::{self, CommentRow, IssueRow};
+use crate::db::{self, CommentRow, CommitRow, IssueRow};
 use crate::error::{GhError, SyncError};
-use crate::gh::{self, GhRunner};
+use crate::gh::GhRunner;
 
 type Result<T> = std::result::Result<T, SyncError>;
 
@@ -20,31 +19,7 @@ pub struct RepoSyncResult {
     pub name: String,
     pub issues_synced: usize,
     pub comments_synced: usize,
-}
-
-// --- Private types for issue deserialization ---
-
-#[derive(Deserialize)]
-struct GhLabel {
-    name: String,
-}
-
-#[derive(Deserialize)]
-struct GhUser {
-    login: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GhSyncIssue {
-    number: u64,
-    title: String,
-    labels: Vec<GhLabel>,
-    assignees: Vec<GhUser>,
-    updated_at: DateTime<Utc>,
-    created_at: DateTime<Utc>,
-    state: String,
-    body: Option<String>,
+    pub commits_synced: usize,
 }
 
 struct SyncIssue {
@@ -56,6 +31,7 @@ struct SyncIssue {
     created_at: DateTime<Utc>,
     state: String,
     body: Option<String>,
+    kind: String,
 }
 
 // --- Private types for project items ---
@@ -83,37 +59,93 @@ fn get_field_ci(value: &serde_json::Value, names: &[&str]) -> Option<String> {
 
 // --- Private fetch functions ---
 
-fn fetch_issues_for_sync(
+/// Fetch all issues and PRs for a repo via REST API (no GraphQL).
+/// The REST `/issues` endpoint returns both issues and PRs; PRs have a
+/// `pull_request` key. Paginates and supports incremental `since`.
+fn fetch_issues_and_prs_rest(
     gh_runner: &dyn GhRunner,
     repo: &str,
+    since: Option<&str>,
 ) -> std::result::Result<Vec<SyncIssue>, GhError> {
-    let json = gh_runner.run_gh(&[
-        "issue",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "open",
-        "--json",
-        "number,title,labels,assignees,updatedAt,createdAt,state,body",
-        "--limit",
-        "500",
-    ])?;
-    let gh_issues: Vec<GhSyncIssue> = serde_json::from_str(&json)?;
-    let issues = gh_issues
-        .into_iter()
-        .map(|gh| SyncIssue {
-            number: gh.number,
-            title: gh.title,
-            labels: gh.labels.into_iter().map(|l| l.name).collect(),
-            assignees: gh.assignees.into_iter().map(|a| a.login).collect(),
-            updated_at: gh.updated_at,
-            created_at: gh.created_at,
-            state: gh.state,
-            body: gh.body,
-        })
-        .collect();
-    Ok(issues)
+    let mut all_items = Vec::new();
+    let mut page = 1u32;
+
+    loop {
+        let mut endpoint = format!(
+            "repos/{repo}/issues?state=all&per_page=100&page={page}&sort=updated&direction=desc"
+        );
+        if let Some(ts) = since {
+            endpoint.push_str(&format!("&since={ts}"));
+        }
+
+        let json = gh_runner.run_gh(&["api", &endpoint])?;
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json)?;
+
+        if parsed.is_empty() {
+            break;
+        }
+
+        for item in &parsed {
+            let number = item.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+            if number == 0 {
+                continue;
+            }
+
+            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or_default();
+            let state = item.get("state").and_then(|v| v.as_str()).unwrap_or("open");
+            let body = item.get("body").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let updated_at = item.get("updated_at").and_then(|v| v.as_str()).unwrap_or_default();
+            let created_at = item.get("created_at").and_then(|v| v.as_str()).unwrap_or_default();
+            let kind = if item.get("pull_request").is_some() { "pr" } else { "issue" };
+
+            let labels: Vec<String> = item
+                .get("labels")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|l| l.get("name").and_then(|n| n.as_str()))
+                        .map(|s| s.to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let assignees: Vec<String> = item
+                .get("assignees")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|a| a.get("login").and_then(|n| n.as_str()))
+                        .map(|s| s.to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let parse_dt = |s: &str| -> DateTime<Utc> {
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now())
+            };
+
+            all_items.push(SyncIssue {
+                number,
+                title: title.to_string(),
+                labels,
+                assignees,
+                updated_at: parse_dt(updated_at),
+                created_at: parse_dt(created_at),
+                state: state.to_uppercase(),
+                body,
+                kind: kind.to_string(),
+            });
+        }
+
+        if parsed.len() < 100 {
+            break;
+        }
+        page += 1;
+    }
+
+    Ok(all_items)
 }
 
 fn fetch_project_items(
@@ -179,12 +211,214 @@ fn fetch_project_items(
     Ok(map)
 }
 
+
+/// Fetch all issue/PR comments for a repo in one REST API call instead of
+/// N+1 GraphQL calls. Uses `GET /repos/{owner}/{repo}/issues/comments` which
+/// covers both issues and PRs. Optionally filters by `since`.
+fn fetch_comments_batch(
+    gh_runner: &dyn GhRunner,
+    repo: &str,
+    since: Option<&str>,
+) -> std::result::Result<Vec<CommentRow>, GhError> {
+    let mut all_comments = Vec::new();
+    let mut page = 1u32;
+
+    loop {
+        let mut endpoint = format!(
+            "repos/{repo}/issues/comments?per_page=100&page={page}&sort=created&direction=asc"
+        );
+        if let Some(ts) = since {
+            endpoint.push_str(&format!("&since={ts}"));
+        }
+
+        let json = gh_runner.run_gh(&["api", &endpoint])?;
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json)?;
+
+        if parsed.is_empty() {
+            break;
+        }
+
+        for item in &parsed {
+            let id_num = item.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let author = item
+                .get("user")
+                .and_then(|u| u.get("login"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let body = item
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let created_at = item
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+
+            // Extract issue number from issue_url: ".../issues/42"
+            let issue_number = item
+                .get("issue_url")
+                .and_then(|v| v.as_str())
+                .and_then(|url| url.rsplit('/').next())
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(0);
+
+            if issue_number == 0 {
+                continue;
+            }
+
+            all_comments.push(CommentRow {
+                repo: repo.to_string(),
+                issue_number,
+                comment_id: id_num,
+                author: author.to_string(),
+                body: body.to_string(),
+                created_at: created_at.to_string(),
+            });
+        }
+
+        if parsed.len() < 100 {
+            break;
+        }
+        page += 1;
+    }
+
+    Ok(all_comments)
+}
+
+/// Fetch commit messages for a specific PR to use as a synthetic body
+/// when the PR has no description.
+fn fetch_pr_commits(
+    gh_runner: &dyn GhRunner,
+    repo: &str,
+    pr_number: u64,
+) -> std::result::Result<String, GhError> {
+    let endpoint = format!("repos/{repo}/pulls/{pr_number}/commits?per_page=100");
+    let json = gh_runner.run_gh(&["api", &endpoint])?;
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&json)?;
+
+    let mut lines = Vec::new();
+    for item in &parsed {
+        let message = item
+            .get("commit")
+            .and_then(|c| c.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let first_line = message.lines().next().unwrap_or_default();
+        if !first_line.is_empty() {
+            lines.push(format!("- {first_line}"));
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
+fn fetch_commits_for_branch(
+    gh_runner: &dyn GhRunner,
+    repo: &str,
+    branch: Option<&str>,
+) -> std::result::Result<Vec<CommitRow>, GhError> {
+    // Fetch last 30 days of commits via GitHub REST API
+    let since = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+    let mut endpoint = format!("repos/{repo}/commits?since={since}&per_page=100");
+    if let Some(b) = branch {
+        endpoint.push_str(&format!("&sha={b}"));
+    }
+    let json = gh_runner.run_gh(&["api", &endpoint])?;
+
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&json)?;
+    let mut commits = Vec::new();
+    for item in parsed {
+        let sha = item.get("sha").and_then(|v| v.as_str()).unwrap_or_default();
+        if sha.is_empty() {
+            continue;
+        }
+        let commit_obj = match item.get("commit") {
+            Some(c) => c,
+            None => continue,
+        };
+        let message = commit_obj
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        // Use the GitHub login if available, fall back to git author name
+        let author = item
+            .get("author")
+            .and_then(|a| a.get("login"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                commit_obj
+                    .get("author")
+                    .and_then(|a| a.get("name"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("unknown");
+        let date = commit_obj
+            .get("author")
+            .and_then(|a| a.get("date"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+
+        commits.push(CommitRow {
+            repo: repo.to_string(),
+            sha: sha.to_string(),
+            author: author.to_string(),
+            message: message.to_string(),
+            committed_at: date.to_string(),
+            branch: branch.unwrap_or_default().to_string(),
+        });
+    }
+    Ok(commits)
+}
+
+/// Fetch commits across all configured branches (or just default if none configured).
+/// Deduplicates by SHA since branches may share commits.
+fn fetch_commits_for_sync(
+    gh_runner: &dyn GhRunner,
+    repo: &str,
+    branches: &[String],
+) -> std::result::Result<Vec<CommitRow>, GhError> {
+    if branches.is_empty() {
+        return fetch_commits_for_branch(gh_runner, repo, None);
+    }
+
+    let mut seen_shas = std::collections::HashSet::new();
+    let mut all_commits = Vec::new();
+
+    for branch in branches {
+        let commits = fetch_commits_for_branch(gh_runner, repo, Some(branch))?;
+        for commit in commits {
+            if seen_shas.insert(commit.sha.clone()) {
+                all_commits.push(commit);
+            }
+        }
+    }
+
+    Ok(all_commits)
+}
+
+// --- Progress reporting ---
+
+/// Callback trait for sync progress. All methods have default no-ops so tests
+/// can pass `&NoProgress` without noise.
+pub trait SyncProgress {
+    /// Called per repo phase: "issues", "PRs", "comments", "commits", "saving".
+    fn phase(&self, _repo: &str, _name: &str) {}
+    /// Called when a repo is fully done.
+    fn repo_done(&self, _repo: &str, _result: &RepoSyncResult) {}
+    /// Called for non-fatal warnings.
+    fn warn(&self, _msg: &str) {}
+}
+
+/// No-op progress for tests and non-interactive usage.
+pub struct NoProgress;
+impl SyncProgress for NoProgress {}
+
 // --- Public API ---
 
 pub fn run_sync(
     config: &Config,
     gh_runner: &dyn GhRunner,
     conn: &rusqlite::Connection,
+    progress: &dyn SyncProgress,
 ) -> Result<SyncResult> {
     // Fetch project data once if configured
     let project_map = if let Some(ref project) = config.project {
@@ -200,7 +434,7 @@ pub fn run_sync(
             }
             Err(e) => {
                 log::warn!("Failed to fetch project items: {e}");
-                eprintln!("  Warning: Failed to fetch project board data: {e}");
+                progress.warn(&format!("Failed to fetch project board data: {e}"));
                 HashMap::new()
             }
         }
@@ -214,29 +448,77 @@ pub fn run_sync(
         let repo = &repo_config.name;
         log::info!("Syncing repo: {repo}");
 
-        // 1. Fetch issues
-        let issues = fetch_issues_for_sync(gh_runner, repo)?;
-        log::info!("Fetched {} issues for {repo}", issues.len());
+        // 0. Check last sync time for incremental fetch
+        let last_sync = db::query_last_sync(conn, repo).ok().flatten();
+        let since = last_sync.as_deref();
+        if let Some(ts) = since {
+            log::info!("Incremental sync for {repo} since {ts}");
+        }
 
-        // 2. Fetch comments for each issue
-        let mut all_comments: Vec<CommentRow> = Vec::new();
-        for issue in &issues {
-            log::debug!("Fetching comments for {repo}#{}", issue.number);
-            let detail = gh::fetch_issue_detail(gh_runner, repo, issue.number)?;
-            for comment in detail.comments {
-                all_comments.push(CommentRow {
-                    repo: repo.clone(),
-                    issue_number: issue.number,
-                    comment_id: comment.id,
-                    author: comment.author,
-                    body: comment.body,
-                    created_at: comment.created_at.to_rfc3339(),
-                });
+        // 1. Fetch issues and PRs via REST API (single endpoint, no GraphQL)
+        progress.phase(repo, "Fetching issues & PRs");
+        let mut items = fetch_issues_and_prs_rest(gh_runner, repo, since)?;
+        let issue_count = items.iter().filter(|i| i.kind == "issue").count();
+        let pr_count = items.iter().filter(|i| i.kind == "pr").count();
+        log::info!("Fetched {issue_count} issues and {pr_count} PRs for {repo}");
+
+        // 2. Fetch all comments in one batch REST call
+        progress.phase(repo, "Fetching comments");
+        let all_comments = match fetch_comments_batch(gh_runner, repo, since) {
+            Ok(comments) => {
+                log::info!("Fetched {} comments for {repo}", comments.len());
+                comments
+            }
+            Err(e) => {
+                log::warn!("Failed to fetch comments for {repo}: {e}");
+                progress.warn(&format!("Failed to fetch comments for {repo}: {e}"));
+                Vec::new()
+            }
+        };
+
+        // 2b. For PRs with empty bodies, fetch commit history as synthetic description
+        let prs_needing_body: Vec<u64> = items.iter()
+            .filter(|i| i.kind == "pr" && i.body.as_deref().unwrap_or("").is_empty())
+            .map(|i| i.number)
+            .collect();
+        if !prs_needing_body.is_empty() {
+            progress.phase(repo, &format!("Fetching commits for {} PRs without descriptions", prs_needing_body.len()));
+            for &pr_num in &prs_needing_body {
+                match fetch_pr_commits(gh_runner, repo, pr_num) {
+                    Ok(commit_body) if !commit_body.is_empty() => {
+                        if let Some(item) = items.iter_mut().find(|i| i.number == pr_num) {
+                            item.body = Some(format!("Commits:\n{commit_body}"));
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::warn!("Failed to fetch commits for PR #{pr_num}: {e}");
+                    }
+                }
             }
         }
 
-        // 3. Build IssueRows, merging project data
-        let issue_rows: Vec<IssueRow> = issues
+        // 3. Fetch commits on configured branches (or default branch)
+        if repo_config.branches.is_empty() {
+            progress.phase(repo, "Fetching commits");
+        } else {
+            progress.phase(repo, &format!("Fetching commits ({})", repo_config.branches.join(", ")));
+        }
+        let commit_rows = match fetch_commits_for_sync(gh_runner, repo, &repo_config.branches) {
+            Ok(commits) => {
+                log::info!("Fetched {} commits for {repo}", commits.len());
+                commits
+            }
+            Err(e) => {
+                log::warn!("Failed to fetch commits for {repo}: {e}");
+                progress.warn(&format!("Failed to fetch commits for {repo}: {e}"));
+                Vec::new()
+            }
+        };
+
+        // 4. Build IssueRows, merging project data
+        progress.phase(repo, "Saving to database");
+        let issue_rows: Vec<IssueRow> = items
             .into_iter()
             .map(|issue| {
                 let project_fields = project_map.get(&(repo.clone(), issue.number));
@@ -246,6 +528,7 @@ pub fn run_sync(
                     title: issue.title,
                     body: issue.body,
                     state: Some(issue.state),
+                    kind: issue.kind,
                     labels: serde_json::to_string(&issue.labels).unwrap_or_default(),
                     assignees: serde_json::to_string(&issue.assignees).unwrap_or_default(),
                     created_at: issue.created_at.to_rfc3339(),
@@ -258,26 +541,31 @@ pub fn run_sync(
             })
             .collect();
 
-        // 4. Upsert in a transaction
+        // 5. Upsert in a transaction
         let issues_count = issue_rows.len();
         let comments_count = all_comments.len();
+        let commits_count = commit_rows.len();
         {
             let tx = conn
                 .unchecked_transaction()
                 .map_err(crate::error::DbError::from)?;
             db::upsert_issues(&tx, &issue_rows)?;
             db::upsert_comments(&tx, &all_comments)?;
+            db::upsert_commits(&tx, &commit_rows)?;
             db::log_sync(&tx, repo, issues_count, comments_count)?;
             tx.commit().map_err(crate::error::DbError::from)?;
         }
 
-        log::info!("Synced {repo}: {issues_count} issues, {comments_count} comments");
+        log::info!("Synced {repo}: {issues_count} issues, {comments_count} comments, {commits_count} commits");
 
-        repo_results.push(RepoSyncResult {
+        let result = RepoSyncResult {
             name: repo.clone(),
             issues_synced: issues_count,
             comments_synced: comments_count,
-        });
+            commits_synced: commits_count,
+        };
+        progress.repo_done(repo, &result);
+        repo_results.push(result);
     }
 
     Ok(SyncResult {

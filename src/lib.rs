@@ -8,4 +8,5 @@ pub mod github;
 pub mod pipeline;
 pub mod prompt;
 pub mod report;
+pub mod roadmap;
 pub mod sync;

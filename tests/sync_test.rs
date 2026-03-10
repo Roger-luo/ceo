@@ -8,32 +8,43 @@ struct MockSyncGh;
 
 impl GhRunner for MockSyncGh {
     fn run_gh(&self, args: &[&str]) -> Result<String, GhError> {
-        // gh issue list
-        if args.iter().any(|a| *a == "list") && args.iter().any(|a| *a == "issue") {
+        // gh api repos/.../issues?state=all (REST: issues + PRs)
+        if args.iter().any(|a| *a == "api")
+            && args.iter().any(|a| a.contains("/issues?") && a.contains("state=all"))
+        {
             return Ok(r#"[{
                 "number": 1,
                 "title": "Fix auth",
                 "labels": [{"name": "bug"}],
                 "assignees": [{"login": "alice"}],
-                "updatedAt": "2026-03-05T10:00:00Z",
-                "createdAt": "2026-03-01T10:00:00Z",
-                "state": "OPEN",
+                "updated_at": "2026-03-05T10:00:00Z",
+                "created_at": "2026-03-01T10:00:00Z",
+                "state": "open",
                 "body": "Auth is broken"
             }]"#
             .to_string());
         }
-        // gh issue view (comments)
-        if args.iter().any(|a| *a == "view") {
-            return Ok(r#"{
-                "body": "Auth is broken",
-                "comments": [{
-                    "id": "IC_mock_1001",
-                    "author": {"login": "bob"},
-                    "body": "I can reproduce this",
-                    "createdAt": "2026-03-02T10:00:00Z"
-                }]
-            }"#
+        // gh api repos/.../issues/comments (batch comments)
+        if args.iter().any(|a| *a == "api") && args.iter().any(|a| a.contains("issues/comments")) {
+            return Ok(r#"[{
+                "id": 1001,
+                "user": {"login": "bob"},
+                "body": "I can reproduce this",
+                "created_at": "2026-03-02T10:00:00Z",
+                "issue_url": "https://api.github.com/repos/org/repo/issues/1"
+            }]"#
             .to_string());
+        }
+        // gh api repos/.../commits
+        if args.iter().any(|a| *a == "api") && args.iter().any(|a| a.contains("commits")) {
+            return Ok(r#"[{
+                "sha": "abc1234567890",
+                "commit": {
+                    "author": {"name": "alice", "date": "2026-03-05T10:00:00Z"},
+                    "message": "fix: resolve auth bug"
+                },
+                "author": {"login": "alice"}
+            }]"#.to_string());
         }
         // gh project item-list
         if args.iter().any(|a| *a == "item-list") {
@@ -62,7 +73,7 @@ name = "org/repo"
     )
     .unwrap();
 
-    let result = run_sync(&config, &MockSyncGh, &conn).unwrap();
+    let result = run_sync(&config, &MockSyncGh, &conn, &ceo::sync::NoProgress).unwrap();
     assert_eq!(result.repos.len(), 1);
     assert_eq!(result.repos[0].issues_synced, 1);
     assert!(result.repos[0].comments_synced >= 1);
@@ -81,6 +92,18 @@ name = "org/repo"
     assert_eq!(comments.len(), 1);
     assert_ne!(comments[0].comment_id, 0); // hashed from node ID
     assert_eq!(comments[0].author, "bob");
+
+    // Verify commits
+    assert_eq!(result.repos[0].commits_synced, 1);
+    let commits = db::query_recent_commits(
+        &conn,
+        &["org/repo".to_string()],
+        "2026-01-01T00:00:00Z",
+    )
+    .unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].author, "alice");
+    assert!(commits[0].message.contains("auth bug"));
 }
 
 #[test]
@@ -101,7 +124,7 @@ name = "org/repo"
         number: 1,
     });
 
-    let result = run_sync(&config, &MockSyncGh, &conn).unwrap();
+    let result = run_sync(&config, &MockSyncGh, &conn, &ceo::sync::NoProgress).unwrap();
     assert_eq!(result.repos[0].issues_synced, 1);
 
     let issues = db::query_recent_issues(
@@ -112,4 +135,29 @@ name = "org/repo"
     .unwrap();
     assert_eq!(issues[0].project_status.as_deref(), Some("In Progress"));
     assert_eq!(issues[0].project_priority.as_deref(), Some("High"));
+}
+
+#[test]
+fn sync_incremental_passes_since_on_second_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let conn = db::open_db_at(&db_path).unwrap();
+
+    let config: Config = toml::from_str(
+        r#"
+[[repos]]
+name = "org/repo"
+"#,
+    )
+    .unwrap();
+
+    // First sync — full fetch
+    let result = run_sync(&config, &MockSyncGh, &conn, &ceo::sync::NoProgress).unwrap();
+    assert_eq!(result.repos[0].issues_synced, 1);
+
+    // Second sync — incremental (mock still returns same data, upsert is idempotent)
+    let result2 = run_sync(&config, &MockSyncGh, &conn, &ceo::sync::NoProgress).unwrap();
+    assert_eq!(result2.repos.len(), 1);
+    // The mock always returns the same issue regardless of --search, so count stays 1
+    assert_eq!(result2.repos[0].issues_synced, 1);
 }

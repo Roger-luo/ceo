@@ -2,7 +2,7 @@ use ceo::agent::Agent;
 use ceo::config::Config;
 use ceo::db;
 use ceo::error::AgentError;
-use ceo::pipeline::run_pipeline;
+use ceo::pipeline::{run_pipeline, NullProgress};
 use ceo::prompt::Prompt;
 use ceo::report::render_markdown;
 
@@ -11,8 +11,8 @@ struct MockAgent;
 impl Agent for MockAgent {
     fn invoke(&self, prompt: &dyn Prompt) -> Result<String, AgentError> {
         let rendered = prompt.render();
-        if rendered.contains("Summarize the past week") {
-            Ok("Great progress on dark mode. Memory leak identified and being fixed.".to_string())
+        if rendered.contains("Write a concise summary for repo") {
+            Ok("<done>Dark mode feature merged.</done>\n<in_progress>Memory leak identified and being fixed.</in_progress>".to_string())
         } else {
             Ok("This issue is about updating documentation. Suggest adding priority:low label.".to_string())
         }
@@ -33,6 +33,7 @@ fn full_pipeline_produces_valid_markdown() {
             title: "Add dark mode".to_string(),
             body: Some("This issue needs triage.".to_string()),
             state: Some("open".to_string()),
+            kind: "issue".to_string(),
             labels: r#"["feature","priority"]"#.to_string(),
             assignees: r#"["alice"]"#.to_string(),
             created_at: "2026-02-25T10:00:00Z".to_string(),
@@ -48,6 +49,7 @@ fn full_pipeline_produces_valid_markdown() {
             title: "Fix memory leak".to_string(),
             body: Some("This issue needs triage.".to_string()),
             state: Some("open".to_string()),
+            kind: "issue".to_string(),
             labels: r#"["bug"]"#.to_string(),
             assignees: r#"["bob"]"#.to_string(),
             created_at: "2026-02-28T10:00:00Z".to_string(),
@@ -63,6 +65,7 @@ fn full_pipeline_produces_valid_markdown() {
             title: "Update docs".to_string(),
             body: Some("This issue needs triage.".to_string()),
             state: Some("open".to_string()),
+            kind: "issue".to_string(),
             labels: r#"[]"#.to_string(),
             assignees: r#"[]"#.to_string(),
             created_at: "2026-03-01T10:00:00Z".to_string(),
@@ -102,11 +105,13 @@ fn full_pipeline_produces_valid_markdown() {
         role = "Backend"
     "#).unwrap();
 
-    let report = run_pipeline(&config, &conn, &MockAgent, 7).unwrap();
+    let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-06", &NullProgress).unwrap();
     let markdown = render_markdown(&report);
 
     assert!(markdown.contains("org/frontend"));
-    assert!(markdown.contains("Great progress on dark mode"));
+    assert!(markdown.contains("**Done:** Dark mode feature merged."));
+    assert!(markdown.contains("**In Progress:** Memory leak identified"));
     assert!(markdown.contains("Needs Attention"));
     assert!(markdown.contains("#11") || markdown.contains("#12"));
     assert!(markdown.contains("Alice Smith"));

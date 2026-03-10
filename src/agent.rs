@@ -1,8 +1,7 @@
 use log::debug;
-use std::collections::HashMap;
 use std::process::{Command, Stdio};
 
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, ClaudeAgentConfig, CodexAgentConfig, GenericAgentConfig};
 use crate::error::AgentError;
 use crate::prompt::Prompt;
 
@@ -20,10 +19,10 @@ pub enum AgentKind {
 
 impl AgentKind {
     pub fn from_config(config: &AgentConfig) -> Self {
-        match config.agent_type.as_str() {
-            "claude" => AgentKind::Claude(ClaudeAgent::from_config(config)),
-            "codex" => AgentKind::Codex(CodexAgent::from_config(config)),
-            _ => AgentKind::Generic(GenericAgent::from_config(config)),
+        match config {
+            AgentConfig::Claude(c) => AgentKind::Claude(ClaudeAgent::new(c)),
+            AgentConfig::Codex(c) => AgentKind::Codex(CodexAgent::new(c)),
+            AgentConfig::Generic(c) => AgentKind::Generic(GenericAgent::new(c)),
         }
     }
 }
@@ -41,44 +40,12 @@ impl Agent for AgentKind {
 // --- ClaudeAgent ---
 
 pub struct ClaudeAgent {
-    pub command: String,
-    pub timeout_secs: u64,
-    pub model: String,
-    pub models: HashMap<String, String>,
-    pub tools: HashMap<String, Vec<String>>,
+    config: ClaudeAgentConfig,
 }
 
 impl ClaudeAgent {
-    pub fn from_config(config: &AgentConfig) -> Self {
-        Self {
-            command: if config.command.is_empty() {
-                "claude".to_string()
-            } else {
-                config.command.clone()
-            },
-            timeout_secs: config.timeout_secs,
-            model: config.model.clone(),
-            models: config.models.clone(),
-            tools: config.tools.clone(),
-        }
-    }
-
-    fn model_for(&self, kind: &str) -> &str {
-        if let Some(m) = self.models.get(kind) {
-            return m.as_str();
-        }
-        if !self.model.is_empty() {
-            return &self.model;
-        }
-        // Cost-effective defaults per prompt type
-        match kind {
-            "triage" => "haiku",
-            _ => "sonnet",
-        }
-    }
-
-    fn tools_for(&self, kind: &str) -> Option<&Vec<String>> {
-        self.tools.get(kind)
+    pub fn new(config: &ClaudeAgentConfig) -> Self {
+        Self { config: config.clone() }
     }
 }
 
@@ -86,12 +53,12 @@ impl Agent for ClaudeAgent {
     fn invoke(&self, prompt: &dyn Prompt) -> Result<String> {
         let rendered = prompt.render();
         let kind = prompt.kind();
-        let model = self.model_for(kind);
+        let model = self.config.model_for(kind);
         let mut args = vec!["-p".to_string(), "--model".to_string(), model.to_string()];
 
         // Merge prompt's required tools with any user-configured extras
         let required = prompt.required_tools();
-        let extra = self.tools_for(kind);
+        let extra = self.config.tools_for(kind);
         let mut all_tools: Vec<&str> = required.to_vec();
         if let Some(extras) = extra {
             for t in extras {
@@ -100,8 +67,6 @@ impl Agent for ClaudeAgent {
                 }
             }
         }
-        // Always pass --allowedTools: explicit list if tools needed,
-        // empty string to disable all tools otherwise
         args.push("--allowedTools".to_string());
         if all_tools.is_empty() {
             args.push(String::new());
@@ -109,61 +74,85 @@ impl Agent for ClaudeAgent {
             args.push(all_tools.join(","));
         }
 
+        // Pass effort level for thinking if configured
+        let effort = self.config.effort_for(kind);
+        if !effort.is_empty() {
+            args.push("--effort".to_string());
+            args.push(effort.to_string());
+        }
+
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        run_cli_agent(&self.command, &args_refs, &rendered)
+        run_cli_agent(&self.config.command, &args_refs, &rendered)
     }
 }
 
 // --- CodexAgent ---
 
 pub struct CodexAgent {
-    pub command: String,
-    pub timeout_secs: u64,
+    config: CodexAgentConfig,
 }
 
 impl CodexAgent {
-    pub fn from_config(config: &AgentConfig) -> Self {
-        Self {
-            command: if config.command.is_empty() {
-                "codex".to_string()
-            } else {
-                config.command.clone()
-            },
-            timeout_secs: config.timeout_secs,
-        }
+    pub fn new(config: &CodexAgentConfig) -> Self {
+        Self { config: config.clone() }
     }
 }
 
 impl Agent for CodexAgent {
     fn invoke(&self, prompt: &dyn Prompt) -> Result<String> {
         let rendered = prompt.render();
-        run_cli_agent(&self.command, &["-q"], &rendered)
+        let kind = prompt.kind();
+        let model = self.config.model_for(kind);
+
+        let mut args = vec!["exec".to_string()];
+
+        // Model selection
+        if !model.is_empty() {
+            args.push("-m".to_string());
+            args.push(model.to_string());
+        }
+
+        // Sandbox mode
+        if !self.config.sandbox.is_empty() {
+            args.push("--sandbox".to_string());
+            args.push(self.config.sandbox.clone());
+        }
+
+        // Reasoning effort (passed via config override)
+        let effort = self.config.effort_for(kind);
+        if !effort.is_empty() {
+            args.push("-c".to_string());
+            args.push(format!("model_reasoning_effort=\"{effort}\""));
+        }
+
+        // Skip git repo trust check — ceo uses codex for text generation only
+        args.push("--skip-git-repo-check".to_string());
+
+        // Read prompt from stdin (pass "-" as prompt arg)
+        args.push("-".to_string());
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        run_cli_agent(&self.config.command, &args_refs, &rendered)
     }
 }
 
 // --- GenericAgent ---
 
 pub struct GenericAgent {
-    pub command: String,
-    pub args: Vec<String>,
-    pub timeout_secs: u64,
+    config: GenericAgentConfig,
 }
 
 impl GenericAgent {
-    pub fn from_config(config: &AgentConfig) -> Self {
-        Self {
-            command: config.command.clone(),
-            args: config.args.clone(),
-            timeout_secs: config.timeout_secs,
-        }
+    pub fn new(config: &GenericAgentConfig) -> Self {
+        Self { config: config.clone() }
     }
 }
 
 impl Agent for GenericAgent {
     fn invoke(&self, prompt: &dyn Prompt) -> Result<String> {
         let rendered = prompt.render();
-        let args_refs: Vec<&str> = self.args.iter().map(|s| s.as_str()).collect();
-        run_cli_agent(&self.command, &args_refs, &rendered)
+        let args_refs: Vec<&str> = self.config.args.iter().map(|s| s.as_str()).collect();
+        run_cli_agent(&self.config.command, &args_refs, &rendered)
     }
 }
 

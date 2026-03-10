@@ -16,62 +16,287 @@ pub struct Config {
     pub team: Vec<TeamMember>,
     #[serde(default)]
     pub project: Option<ProjectConfig>,
+    /// Preferred editor for `ceo roadmap edit` etc. Falls back to $EDITOR, then "vi".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct AgentConfig {
-    #[serde(default = "default_agent_type", rename = "type")]
-    pub agent_type: String,
-    #[serde(default = "default_agent_command")]
+// --- Per-agent-type config structs ---
+
+#[derive(Debug, Clone)]
+pub struct ClaudeAgentConfig {
     pub command: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
-    #[serde(default)]
     pub model: String,
-    #[serde(default)]
     pub models: HashMap<String, String>,
-    #[serde(default)]
     pub tools: HashMap<String, Vec<String>>,
+    pub effort: String,
+    pub effort_by_kind: HashMap<String, String>,
 }
 
-impl Default for AgentConfig {
+impl Default for ClaudeAgentConfig {
     fn default() -> Self {
         Self {
-            agent_type: default_agent_type(),
-            command: default_agent_command(),
-            args: Vec::new(),
+            command: "claude".to_string(),
             timeout_secs: default_timeout(),
             model: String::new(),
             models: HashMap::new(),
             tools: HashMap::new(),
+            effort: String::new(),
+            effort_by_kind: HashMap::new(),
         }
     }
 }
 
-impl AgentConfig {
-    /// Returns the model to use for a given prompt kind.
-    /// Checks `models` map first, falls back to `model`, then empty (agent default).
+impl ClaudeAgentConfig {
     pub fn model_for(&self, kind: &str) -> &str {
         if let Some(m) = self.models.get(kind) {
             return m.as_str();
         }
-        &self.model
+        if !self.model.is_empty() {
+            return &self.model;
+        }
+        match kind {
+            "triage" => "haiku",
+            _ => "sonnet",
+        }
     }
 
-    /// Returns the allowed tools for a given prompt kind.
-    /// Returns None if no tools are configured (agent decides).
     pub fn tools_for(&self, kind: &str) -> Option<&Vec<String>> {
         self.tools.get(kind)
+    }
+
+    pub fn effort_for(&self, kind: &str) -> &str {
+        if let Some(e) = self.effort_by_kind.get(kind) {
+            return e.as_str();
+        }
+        &self.effort
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodexAgentConfig {
+    pub command: String,
+    pub timeout_secs: u64,
+    pub model: String,
+    pub models: HashMap<String, String>,
+    pub sandbox: String,
+    pub effort: String,
+    pub effort_by_kind: HashMap<String, String>,
+}
+
+impl Default for CodexAgentConfig {
+    fn default() -> Self {
+        Self {
+            command: "codex".to_string(),
+            timeout_secs: default_timeout(),
+            model: String::new(),
+            models: HashMap::new(),
+            sandbox: String::new(),
+            effort: String::new(),
+            effort_by_kind: HashMap::new(),
+        }
+    }
+}
+
+impl CodexAgentConfig {
+    pub fn model_for(&self, kind: &str) -> &str {
+        if let Some(m) = self.models.get(kind) {
+            return m.as_str();
+        }
+        if !self.model.is_empty() {
+            return &self.model;
+        }
+        match kind {
+            "triage" => "gpt-5.1-codex-mini",
+            _ => "gpt-5.3-codex",
+        }
+    }
+
+    pub fn effort_for(&self, kind: &str) -> &str {
+        if let Some(e) = self.effort_by_kind.get(kind) {
+            return e.as_str();
+        }
+        &self.effort
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GenericAgentConfig {
+    pub command: String,
+    pub args: Vec<String>,
+    pub timeout_secs: u64,
+}
+
+impl Default for GenericAgentConfig {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            args: Vec::new(),
+            timeout_secs: default_timeout(),
+        }
+    }
+}
+
+// --- Typed enum ---
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(from = "AgentConfigHelper", into = "AgentConfigHelper")]
+pub enum AgentConfig {
+    Claude(ClaudeAgentConfig),
+    Codex(CodexAgentConfig),
+    Generic(GenericAgentConfig),
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        AgentConfig::Claude(ClaudeAgentConfig::default())
+    }
+}
+
+impl AgentConfig {
+    pub fn agent_type(&self) -> &str {
+        match self {
+            AgentConfig::Claude(_) => "claude",
+            AgentConfig::Codex(_) => "codex",
+            AgentConfig::Generic(_) => "generic",
+        }
+    }
+
+    pub fn command(&self) -> &str {
+        match self {
+            AgentConfig::Claude(c) => &c.command,
+            AgentConfig::Codex(c) => &c.command,
+            AgentConfig::Generic(c) => &c.command,
+        }
+    }
+
+    pub fn timeout_secs(&self) -> u64 {
+        match self {
+            AgentConfig::Claude(c) => c.timeout_secs,
+            AgentConfig::Codex(c) => c.timeout_secs,
+            AgentConfig::Generic(c) => c.timeout_secs,
+        }
+    }
+
+    pub fn model(&self) -> &str {
+        match self {
+            AgentConfig::Claude(c) => &c.model,
+            AgentConfig::Codex(c) => &c.model,
+            AgentConfig::Generic(_) => "",
+        }
+    }
+
+    pub fn models(&self) -> Option<&HashMap<String, String>> {
+        match self {
+            AgentConfig::Claude(c) => Some(&c.models),
+            AgentConfig::Codex(c) => Some(&c.models),
+            AgentConfig::Generic(_) => None,
+        }
+    }
+}
+
+// --- Serde helper (flat struct for backward-compatible TOML) ---
+
+#[derive(Debug, Deserialize, Serialize)]
+struct AgentConfigHelper {
+    #[serde(default = "default_agent_type", rename = "type")]
+    agent_type: String,
+    #[serde(default)]
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default = "default_timeout")]
+    timeout_secs: u64,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    models: HashMap<String, String>,
+    #[serde(default)]
+    tools: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    effort: String,
+    #[serde(default)]
+    effort_by_kind: HashMap<String, String>,
+    #[serde(default)]
+    sandbox: String,
+}
+
+impl From<AgentConfigHelper> for AgentConfig {
+    fn from(h: AgentConfigHelper) -> Self {
+        match h.agent_type.as_str() {
+            "codex" => AgentConfig::Codex(CodexAgentConfig {
+                command: if h.command.is_empty() { "codex".to_string() } else { h.command },
+                timeout_secs: h.timeout_secs,
+                model: h.model,
+                models: h.models,
+                sandbox: h.sandbox,
+                effort: h.effort,
+                effort_by_kind: h.effort_by_kind,
+            }),
+            "generic" => AgentConfig::Generic(GenericAgentConfig {
+                command: h.command,
+                args: h.args,
+                timeout_secs: h.timeout_secs,
+            }),
+            // Default: claude (handles "claude" and any unknown type)
+            _ => AgentConfig::Claude(ClaudeAgentConfig {
+                command: if h.command.is_empty() { "claude".to_string() } else { h.command },
+                timeout_secs: h.timeout_secs,
+                model: h.model,
+                models: h.models,
+                tools: h.tools,
+                effort: h.effort,
+                effort_by_kind: h.effort_by_kind,
+            }),
+        }
+    }
+}
+
+impl From<AgentConfig> for AgentConfigHelper {
+    fn from(config: AgentConfig) -> Self {
+        match config {
+            AgentConfig::Claude(c) => AgentConfigHelper {
+                agent_type: "claude".to_string(),
+                command: c.command,
+                args: Vec::new(),
+                timeout_secs: c.timeout_secs,
+                model: c.model,
+                models: c.models,
+                tools: c.tools,
+                effort: c.effort,
+                effort_by_kind: c.effort_by_kind,
+                sandbox: String::new(),
+            },
+            AgentConfig::Codex(c) => AgentConfigHelper {
+                agent_type: "codex".to_string(),
+                command: c.command,
+                args: Vec::new(),
+                timeout_secs: c.timeout_secs,
+                model: c.model,
+                models: c.models,
+                tools: HashMap::new(),
+                effort: c.effort,
+                effort_by_kind: c.effort_by_kind,
+                sandbox: c.sandbox,
+            },
+            AgentConfig::Generic(c) => AgentConfigHelper {
+                agent_type: "generic".to_string(),
+                command: c.command,
+                args: c.args,
+                timeout_secs: c.timeout_secs,
+                model: String::new(),
+                models: HashMap::new(),
+                tools: HashMap::new(),
+                effort: String::new(),
+                effort_by_kind: HashMap::new(),
+                sandbox: String::new(),
+            },
+        }
     }
 }
 
 fn default_agent_type() -> String {
-    "claude".to_string()
-}
-
-fn default_agent_command() -> String {
     "claude".to_string()
 }
 
@@ -84,6 +309,9 @@ pub struct RepoConfig {
     pub name: String,
     #[serde(default)]
     pub labels_required: Vec<String>,
+    /// Branches to track commits from. Empty means default branch only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -142,23 +370,55 @@ impl Config {
 
     pub fn get_field(&self, key: &str) -> Result<String> {
         match key {
-            "agent.type" => Ok(self.agent.agent_type.clone()),
-            "agent.command" => Ok(self.agent.command.clone()),
-            "agent.timeout_secs" => Ok(self.agent.timeout_secs.to_string()),
-            "agent.args" => Ok(self.agent.args.join(",")),
-            "agent.model" => Ok(self.agent.model.clone()),
+            "agent.type" => Ok(self.agent.agent_type().to_string()),
+            "agent.command" => Ok(self.agent.command().to_string()),
+            "agent.timeout_secs" => Ok(self.agent.timeout_secs().to_string()),
+            "agent.model" => Ok(self.agent.model().to_string()),
             k if k.starts_with("agent.models.") => {
                 let kind = &k["agent.models.".len()..];
-                self.agent.models.get(kind)
+                self.agent.models()
+                    .and_then(|m| m.get(kind))
                     .cloned()
                     .ok_or_else(|| ConfigError::NoModel(kind.to_string()))
             }
+            // Claude-specific
             k if k.starts_with("agent.tools.") => {
                 let kind = &k["agent.tools.".len()..];
-                self.agent.tools.get(kind)
-                    .map(|v| v.join(","))
-                    .ok_or_else(|| ConfigError::NoTools(kind.to_string()))
+                match &self.agent {
+                    AgentConfig::Claude(c) => c.tools.get(kind)
+                        .map(|v| v.join(","))
+                        .ok_or_else(|| ConfigError::NoTools(kind.to_string())),
+                    _ => Err(ConfigError::UnknownKey(k.to_string())),
+                }
             }
+            "agent.effort" => match &self.agent {
+                AgentConfig::Claude(c) => Ok(c.effort.clone()),
+                AgentConfig::Codex(c) => Ok(c.effort.clone()),
+                _ => Err(ConfigError::UnknownKey("agent.effort (Claude/Codex only)".to_string())),
+            },
+            k if k.starts_with("agent.effort_by_kind.") => {
+                let kind = &k["agent.effort_by_kind.".len()..];
+                match &self.agent {
+                    AgentConfig::Claude(c) => c.effort_by_kind.get(kind)
+                        .cloned()
+                        .ok_or_else(|| ConfigError::UnknownKey(k.to_string())),
+                    AgentConfig::Codex(c) => c.effort_by_kind.get(kind)
+                        .cloned()
+                        .ok_or_else(|| ConfigError::UnknownKey(k.to_string())),
+                    _ => Err(ConfigError::UnknownKey(k.to_string())),
+                }
+            }
+            // Codex-specific
+            "agent.sandbox" => match &self.agent {
+                AgentConfig::Codex(c) => Ok(c.sandbox.clone()),
+                _ => Err(ConfigError::UnknownKey("agent.sandbox (Codex only)".to_string())),
+            },
+            // Generic-specific
+            "agent.args" => match &self.agent {
+                AgentConfig::Generic(c) => Ok(c.args.join(",")),
+                _ => Err(ConfigError::UnknownKey("agent.args (generic only)".to_string())),
+            },
+            "editor" => Ok(self.editor.clone().unwrap_or_default()),
             "project.org" => self.project.as_ref()
                 .map(|p| p.org.clone())
                 .ok_or_else(|| ConfigError::UnknownKey("project.org (not configured)".to_string())),
@@ -171,35 +431,103 @@ impl Config {
 
     pub fn set_field(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
-            "agent.type" => self.agent.agent_type = value.to_string(),
-            "agent.command" => self.agent.command = value.to_string(),
+            "agent.type" => {
+                // Switch agent type, preserving shared fields
+                let model = self.agent.model().to_string();
+                let models = self.agent.models().cloned().unwrap_or_default();
+                let timeout = self.agent.timeout_secs();
+                self.agent = match value {
+                    "codex" => AgentConfig::Codex(CodexAgentConfig {
+                        command: "codex".to_string(),
+                        timeout_secs: timeout,
+                        model,
+                        models,
+                        ..CodexAgentConfig::default()
+                    }),
+                    "generic" => AgentConfig::Generic(GenericAgentConfig {
+                        timeout_secs: timeout,
+                        ..GenericAgentConfig::default()
+                    }),
+                    _ => AgentConfig::Claude(ClaudeAgentConfig {
+                        command: "claude".to_string(),
+                        timeout_secs: timeout,
+                        model,
+                        models,
+                        ..ClaudeAgentConfig::default()
+                    }),
+                };
+            }
+            "agent.command" => match &mut self.agent {
+                AgentConfig::Claude(c) => c.command = value.to_string(),
+                AgentConfig::Codex(c) => c.command = value.to_string(),
+                AgentConfig::Generic(c) => c.command = value.to_string(),
+            },
             "agent.timeout_secs" => {
-                self.agent.timeout_secs = value.parse()
-                    .map_err(|_| ConfigError::InvalidValue {
-                        key: key.to_string(),
-                        message: format!("expected integer, got: {value}"),
-                    })?;
+                let t: u64 = value.parse().map_err(|_| ConfigError::InvalidValue {
+                    key: key.to_string(),
+                    message: format!("expected integer, got: {value}"),
+                })?;
+                match &mut self.agent {
+                    AgentConfig::Claude(c) => c.timeout_secs = t,
+                    AgentConfig::Codex(c) => c.timeout_secs = t,
+                    AgentConfig::Generic(c) => c.timeout_secs = t,
+                }
             }
-            "agent.args" => {
-                self.agent.args = value.split(',').map(|s| s.trim().to_string()).collect();
-            }
-            "agent.model" => self.agent.model = value.to_string(),
+            "agent.model" => match &mut self.agent {
+                AgentConfig::Claude(c) => c.model = value.to_string(),
+                AgentConfig::Codex(c) => c.model = value.to_string(),
+                AgentConfig::Generic(_) => return Err(ConfigError::UnknownKey("agent.model (generic has no model)".to_string())),
+            },
             k if k.starts_with("agent.models.") => {
                 let kind = k["agent.models.".len()..].to_string();
-                self.agent.models.insert(kind, value.to_string());
+                match &mut self.agent {
+                    AgentConfig::Claude(c) => { c.models.insert(kind, value.to_string()); }
+                    AgentConfig::Codex(c) => { c.models.insert(kind, value.to_string()); }
+                    AgentConfig::Generic(_) => return Err(ConfigError::UnknownKey(k.to_string())),
+                }
             }
+            // Claude-specific
             k if k.starts_with("agent.tools.") => {
                 let kind = k["agent.tools.".len()..].to_string();
                 let tools: Vec<String> = value.split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-                self.agent.tools.insert(kind, tools);
+                match &mut self.agent {
+                    AgentConfig::Claude(c) => { c.tools.insert(kind, tools); }
+                    _ => return Err(ConfigError::UnknownKey(k.to_string())),
+                }
             }
+            "agent.effort" => match &mut self.agent {
+                AgentConfig::Claude(c) => c.effort = value.to_string(),
+                AgentConfig::Codex(c) => c.effort = value.to_string(),
+                _ => return Err(ConfigError::UnknownKey("agent.effort (Claude/Codex only)".to_string())),
+            },
+            k if k.starts_with("agent.effort_by_kind.") => {
+                let kind = k["agent.effort_by_kind.".len()..].to_string();
+                match &mut self.agent {
+                    AgentConfig::Claude(c) => { c.effort_by_kind.insert(kind, value.to_string()); }
+                    AgentConfig::Codex(c) => { c.effort_by_kind.insert(kind, value.to_string()); }
+                    _ => return Err(ConfigError::UnknownKey(k.to_string())),
+                }
+            }
+            // Codex-specific
+            "agent.sandbox" => match &mut self.agent {
+                AgentConfig::Codex(c) => c.sandbox = value.to_string(),
+                _ => return Err(ConfigError::UnknownKey("agent.sandbox (Codex only)".to_string())),
+            },
+            // Generic-specific
+            "agent.args" => match &mut self.agent {
+                AgentConfig::Generic(c) => {
+                    c.args = value.split(',').map(|s| s.trim().to_string()).collect();
+                }
+                _ => return Err(ConfigError::UnknownKey("agent.args (generic only)".to_string())),
+            },
             "repos.add" => {
                 self.repos.push(RepoConfig {
                     name: value.to_string(),
                     labels_required: Vec::new(),
+                    branches: Vec::new(),
                 });
             }
             "repos.remove" => {
@@ -239,9 +567,19 @@ impl Config {
                     });
                 }
             }
+            "editor" => {
+                self.editor = if value.is_empty() { None } else { Some(value.to_string()) };
+            }
             _ => return Err(ConfigError::UnknownKey(key.to_string())),
         }
         Ok(())
+    }
+
+    /// Resolve editor: config > $EDITOR > vi
+    pub fn editor(&self) -> String {
+        self.editor.clone()
+            .or_else(|| std::env::var("EDITOR").ok())
+            .unwrap_or_else(|| "vi".to_string())
     }
 
     fn find_config_path() -> Option<PathBuf> {

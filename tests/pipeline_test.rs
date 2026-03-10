@@ -2,14 +2,14 @@ use ceo::agent::Agent;
 use ceo::config::Config;
 use ceo::db;
 use ceo::error::AgentError;
-use ceo::pipeline::run_pipeline;
+use ceo::pipeline::{run_pipeline, NullProgress};
 use ceo::prompt::Prompt;
 
 struct MockAgent;
 
 impl Agent for MockAgent {
     fn invoke(&self, _prompt: &dyn Prompt) -> Result<String, AgentError> {
-        Ok("Mock agent summary.".to_string())
+        Ok("<done>Mock work completed.</done><in_progress>Mock active work.</in_progress>".to_string())
     }
 }
 
@@ -26,6 +26,7 @@ fn pipeline_reads_from_database() {
         title: "Implement auth".to_string(),
         body: Some("Auth implementation needed.".to_string()),
         state: Some("open".to_string()),
+        kind: "issue".to_string(),
         labels: r#"["feature"]"#.to_string(),
         assignees: r#"["alice"]"#.to_string(),
         created_at: "2026-03-01T10:00:00Z".to_string(),
@@ -58,10 +59,12 @@ fn pipeline_reads_from_database() {
         role = "Lead"
     "#).unwrap();
 
-    let report = run_pipeline(&config, &conn, &MockAgent, 7).unwrap();
+    let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress).unwrap();
     assert_eq!(report.repos.len(), 1);
     assert_eq!(report.repos[0].name, "org/frontend");
-    assert!(report.repos[0].progress.contains("Mock agent summary"));
+    assert_eq!(report.repos[0].done.as_deref(), Some("Mock work completed."));
+    assert_eq!(report.repos[0].in_progress.as_deref(), Some("Mock active work."));
     assert!(!report.repos[0].flagged_issues.is_empty());
     assert_eq!(report.team_stats.len(), 1);
     assert_eq!(report.team_stats[0].active, 1);
@@ -78,7 +81,8 @@ fn pipeline_handles_empty_database() {
         name = "org/empty"
     "#).unwrap();
 
-    let report = run_pipeline(&config, &conn, &MockAgent, 7).unwrap();
+    let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress).unwrap();
     assert_eq!(report.repos.len(), 1);
-    assert!(report.repos[0].progress.contains("No recent activity"));
+    assert!(!report.repos[0].has_activity());
 }

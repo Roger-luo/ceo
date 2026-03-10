@@ -13,6 +13,7 @@ type Result<T> = std::result::Result<T, GhError>;
 pub struct Issue {
     pub number: u64,
     pub title: String,
+    pub kind: String,
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
     pub updated_at: DateTime<Utc>,
@@ -83,6 +84,7 @@ impl Issue {
             .map(|gh| Issue {
                 number: gh.number,
                 title: gh.title,
+                kind: "issue".to_string(),
                 labels: gh.labels.into_iter().map(|l| l.name).collect(),
                 assignees: gh.assignees.into_iter().map(|a| a.login).collect(),
                 updated_at: gh.updated_at,

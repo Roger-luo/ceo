@@ -1,7 +1,12 @@
 mod tui;
 
-use anyhow::{Context, Result};
+use std::sync::Mutex;
+
+use anyhow::Result;
 use clap::{Parser, Subcommand};
+use indicatif::{ProgressBar, ProgressStyle};
+
+use ceo::pipeline::PipelineProgress;
 
 #[derive(Parser)]
 #[command(name = "ceo", about = "Weekly project summary from GitHub issues")]
@@ -12,11 +17,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Generate a weekly report (prints markdown to stdout)
+    /// Generate a report (prints markdown to stdout)
     Report {
-        /// Number of days to look back
+        /// Number of days to look back (default: 7)
         #[arg(long, default_value = "7")]
         days: i64,
+        /// Generate report for a specific month (YYYY-MM, e.g. 2026-03)
+        #[arg(long)]
+        month: Option<String>,
     },
     /// Launch interactive TUI mode
     Interactive,
@@ -27,6 +35,13 @@ enum Commands {
     },
     /// Sync GitHub data to local database
     Sync,
+    /// Clear generated summary caches (forces re-generation on next report)
+    ClearCache,
+    /// Manage roadmap / initiatives
+    Roadmap {
+        #[command(subcommand)]
+        action: RoadmapAction,
+    },
     /// Generate an example config file (alias for `config`)
     #[command(hide = true)]
     Init,
@@ -47,25 +62,163 @@ enum ConfigAction {
     Show,
 }
 
+#[derive(Subcommand)]
+enum RoadmapAction {
+    /// Show current roadmap
+    Show,
+    /// Open roadmap in $EDITOR
+    Edit,
+    /// Add an initiative
+    Add {
+        /// Initiative name
+        name: String,
+        /// Timeframe (e.g. "Q1 2026", "2026")
+        #[arg(long)]
+        timeframe: Option<String>,
+        /// Comma-separated list of repos
+        #[arg(long, value_delimiter = ',')]
+        repos: Vec<String>,
+        /// Description of the initiative
+        #[arg(long)]
+        description: String,
+    },
+    /// Remove an initiative by name
+    Remove {
+        /// Initiative name to remove
+        name: String,
+    },
+}
+
 fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Report { days } => cmd_report(days),
+        Commands::Report { days, month } => cmd_report(days, month),
         Commands::Interactive => cmd_interactive(),
         Commands::Sync => cmd_sync(),
+        Commands::ClearCache => cmd_clear_cache(),
         Commands::Config { action } => cmd_config(action),
+        Commands::Roadmap { action } => cmd_roadmap(action),
         Commands::Init => cmd_config(None),
     }
 }
 
-fn cmd_report(days: i64) -> Result<()> {
+struct ReportProgress {
+    bar: Mutex<Option<ProgressBar>>,
+}
+
+impl ReportProgress {
+    fn new() -> Self {
+        Self { bar: Mutex::new(None) }
+    }
+
+    fn set_spinner(&self, msg: String) {
+        let mut guard = self.bar.lock().unwrap();
+        if let Some(pb) = guard.take() {
+            pb.finish_and_clear();
+        }
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template("  {spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
+        );
+        pb.set_message(msg);
+        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+        *guard = Some(pb);
+    }
+
+    fn set_bar(&self, total: u64, msg: String) {
+        let mut guard = self.bar.lock().unwrap();
+        if let Some(pb) = guard.take() {
+            pb.finish_and_clear();
+        }
+        let pb = ProgressBar::new(total);
+        pb.set_style(
+            ProgressStyle::with_template("  {bar:30.cyan/dim} {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("━╸─"),
+        );
+        pb.set_message(msg);
+        *guard = Some(pb);
+    }
+}
+
+impl PipelineProgress for ReportProgress {
+    fn repo_start(&self, repo: &str, issue_count: usize) {
+        if issue_count == 0 {
+            self.set_spinner(format!("{repo}: no recent issues"));
+        } else {
+            self.set_bar(issue_count as u64, format!("{repo}"));
+        }
+    }
+
+    fn issue_step(&self, _index: usize, _total: usize, number: u64, title: &str) {
+        let guard = self.bar.lock().unwrap();
+        if let Some(pb) = guard.as_ref() {
+            pb.set_message(format!("#{number} {title}"));
+            pb.inc(1);
+        }
+    }
+
+    fn phase(&self, msg: &str) {
+        let guard = self.bar.lock().unwrap();
+        if let Some(pb) = guard.as_ref() {
+            pb.set_message(msg.to_string());
+        } else {
+            drop(guard);
+            self.set_spinner(msg.to_string());
+        }
+    }
+
+    fn repo_done(&self, repo: &str) {
+        let mut guard = self.bar.lock().unwrap();
+        if let Some(pb) = guard.take() {
+            pb.finish_and_clear();
+        }
+        eprintln!("  ✓ {repo}");
+    }
+
+    fn finish(&self) {
+        let mut guard = self.bar.lock().unwrap();
+        if let Some(pb) = guard.take() {
+            pb.finish_and_clear();
+        }
+    }
+}
+
+fn resolve_date_range(days: i64, month: Option<String>) -> Result<(String, String)> {
+    use chrono::{Datelike, Duration, NaiveDate, Utc};
+
+    if let Some(m) = month {
+        let first = NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d")
+            .map_err(|_| anyhow::anyhow!("Invalid month format '{m}', expected YYYY-MM"))?;
+        let next_month = if first.month() == 12 {
+            NaiveDate::from_ymd_opt(first.year() + 1, 1, 1).unwrap()
+        } else {
+            NaiveDate::from_ymd_opt(first.year(), first.month() + 1, 1).unwrap()
+        };
+        let since = first.and_hms_opt(0, 0, 0).unwrap().and_utc().to_rfc3339();
+        let until = next_month.and_hms_opt(0, 0, 0).unwrap().and_utc().to_rfc3339();
+        let _ = until; // DB query currently only uses `since`; upper bound enforced by data freshness
+        let label = format!("{}", first.format("%B %Y"));
+        Ok((since, label))
+    } else {
+        let since = (Utc::now() - Duration::days(days)).to_rfc3339();
+        let label = Utc::now().format("%Y-%m-%d").to_string();
+        Ok((since, label))
+    }
+}
+
+fn cmd_report(days: i64, month: Option<String>) -> Result<()> {
     let config = ceo::config::Config::load()?;
     let conn = ceo::db::open_existing_db()?;
     let agent = ceo::agent::AgentKind::from_config(&config.agent);
+    let progress = ReportProgress::new();
+    let (since, label) = resolve_date_range(days, month)?;
 
-    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, days)?;
+    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, &since, &label, &progress)?;
     let markdown = ceo::report::render_markdown(&report_data);
     print!("{markdown}");
     Ok(())
@@ -75,27 +228,77 @@ fn cmd_interactive() -> Result<()> {
     let config = ceo::config::Config::load()?;
     let conn = ceo::db::open_existing_db()?;
     let agent = ceo::agent::AgentKind::from_config(&config.agent);
+    let progress = ReportProgress::new();
+    let (since, label) = resolve_date_range(7, None)?;
 
-    eprintln!("Generating report from local database...");
-    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, 7)?;
+    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, &since, &label, &progress)?;
     let markdown = ceo::report::render_markdown(&report_data);
 
     tui::run_tui(markdown)?;
     Ok(())
 }
 
+fn cmd_clear_cache() -> Result<()> {
+    let conn = ceo::db::open_existing_db()?;
+    ceo::db::clear_caches(&conn)?;
+    eprintln!("Cleared all summary caches. Next report will regenerate everything.");
+    Ok(())
+}
+
 fn cmd_sync() -> Result<()> {
+    use ceo::sync::{SyncProgress, RepoSyncResult};
+
+    struct IndicatifProgress {
+        spinner: Mutex<Option<ProgressBar>>,
+    }
+
+    impl IndicatifProgress {
+        fn new() -> Self {
+            Self {
+                spinner: Mutex::new(None),
+            }
+        }
+    }
+
+    impl SyncProgress for IndicatifProgress {
+        fn phase(&self, repo: &str, name: &str) {
+            if let Some(pb) = self.spinner.lock().unwrap().take() {
+                pb.finish_and_clear();
+            }
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::with_template("  {spinner:.cyan} {msg}")
+                    .unwrap()
+                    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
+            );
+            pb.set_message(format!("{repo}: {name}..."));
+            pb.enable_steady_tick(std::time::Duration::from_millis(80));
+            *self.spinner.lock().unwrap() = Some(pb);
+        }
+
+        fn repo_done(&self, repo: &str, result: &RepoSyncResult) {
+            if let Some(pb) = self.spinner.lock().unwrap().take() {
+                pb.finish_and_clear();
+            }
+            eprintln!(
+                "  {repo}: {} issues, {} comments, {} commits",
+                result.issues_synced, result.comments_synced, result.commits_synced,
+            );
+        }
+
+        fn warn(&self, msg: &str) {
+            eprintln!("  Warning: {msg}");
+        }
+    }
+
     let config = ceo::config::Config::load()?;
     let gh_runner = ceo::gh::RealGhRunner;
     let db_path = ceo::db::db_path();
     let conn = ceo::db::open_db_at(&db_path)?;
 
     eprintln!("Syncing to {}...", db_path.display());
-    let result = ceo::sync::run_sync(&config, &gh_runner, &conn)?;
-
-    for repo in &result.repos {
-        eprintln!("  {}: {} issues, {} comments", repo.name, repo.issues_synced, repo.comments_synced);
-    }
+    let progress = IndicatifProgress::new();
+    let _result = ceo::sync::run_sync(&config, &gh_runner, &conn, &progress)?;
     eprintln!("Sync complete.");
     Ok(())
 }
@@ -127,205 +330,67 @@ fn cmd_config(action: Option<ConfigAction>) -> Result<()> {
     }
 }
 
+fn cmd_roadmap(action: RoadmapAction) -> Result<()> {
+    use ceo::roadmap::{Initiative, Roadmap};
+
+    match action {
+        RoadmapAction::Show => {
+            let path = Roadmap::path();
+            if !path.exists() {
+                eprintln!("No roadmap file. Create one with: ceo roadmap edit");
+                return Ok(());
+            }
+            let contents = std::fs::read_to_string(&path)?;
+            print!("{contents}");
+            Ok(())
+        }
+        RoadmapAction::Edit => {
+            let path = Roadmap::path();
+            if !path.exists() {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, Roadmap::template())?;
+            }
+            let config = ceo::config::Config::load()
+                .unwrap_or_else(|_| toml::from_str("repos = []").unwrap());
+            let editor = config.editor();
+            let status = std::process::Command::new(&editor)
+                .arg(&path)
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("Editor exited with error");
+            }
+            eprintln!("Roadmap saved to {}", path.display());
+            Ok(())
+        }
+        RoadmapAction::Add { name, timeframe, repos, description } => {
+            let mut roadmap = Roadmap::load();
+            roadmap.add(Initiative { name: name.clone(), timeframe, repos, description })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            roadmap.save()?;
+            eprintln!("Added initiative: {name}");
+            Ok(())
+        }
+        RoadmapAction::Remove { name } => {
+            let mut roadmap = Roadmap::load();
+            roadmap.remove(&name)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            roadmap.save()?;
+            eprintln!("Removed initiative: {name}");
+            Ok(())
+        }
+    }
+}
+
 fn cmd_config_wizard() -> Result<()> {
-    use rustyline::DefaultEditor;
-
-    let mut rl = DefaultEditor::new()?;
-
     let mut config = ceo::config::Config::load()
         .unwrap_or_else(|_| toml::from_str("repos = []").unwrap());
 
-    eprintln!("\n--- Agent ---");
-    // Agent type
-    let line = rl.readline(&format!("Agent type [{}]: ", config.agent.agent_type))?;
-    let line = line.trim();
-    if !line.is_empty() {
-        config.agent.agent_type = line.to_string();
-    }
-
-    // Timeout
-    let line = rl.readline(&format!("Timeout in seconds [{}]: ", config.agent.timeout_secs))?;
-    let line = line.trim();
-    if !line.is_empty() {
-        config.agent.timeout_secs = line.parse()
-            .context("Invalid number for timeout")?;
-    }
-
-    // Models
-    eprintln!("\n--- Models ---");
-    let default_model_display = if config.agent.model.is_empty() { "agent default".to_string() } else { config.agent.model.clone() };
-    eprintln!("Default model: {default_model_display}");
-    if !config.agent.models.is_empty() {
-        for (kind, model) in &config.agent.models {
-            eprintln!("  {kind}: {model}");
-        }
-    }
-    let line = rl.readline(&format!("Default model [{}]: ", default_model_display))?;
-    let line = line.trim();
-    if !line.is_empty() {
-        config.agent.model = line.to_string();
-    }
-
-    // Per-prompt model overrides
-    for kind in &["summary", "triage"] {
-        let current = config.agent.models.get(*kind)
-            .map(|s| s.as_str())
-            .unwrap_or("(default)");
-        let line = rl.readline(&format!("Model for {kind} [{}]: ", current))?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line == "-" {
-            config.agent.models.remove(*kind);
-        } else {
-            config.agent.models.insert(kind.to_string(), line.to_string());
-        }
-    }
-
-    // Per-prompt extra tools
-    eprintln!("\n--- Extra tools ---");
-    eprintln!("  Some prompts have built-in tool requirements (e.g. triage always gets gh).");
-    eprintln!("  Add extra tools per prompt type here, e.g. Read,WebSearch");
-    for kind in &["summary", "triage"] {
-        let current = config.agent.tools.get(*kind)
-            .map(|v| if v.is_empty() { "(none)".to_string() } else { v.join(", ") })
-            .unwrap_or("(none)".to_string());
-        let line = rl.readline(&format!("Extra tools for {kind} [{current}]: "))?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line == "-" {
-            config.agent.tools.remove(*kind);
-        } else {
-            let tools: Vec<String> = line.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            config.agent.tools.insert(kind.to_string(), tools);
-        }
-    }
-
-    // Repos
-    eprintln!("\n--- Repos ---");
-    if !config.repos.is_empty() {
-        for (i, repo) in config.repos.iter().enumerate() {
-            let labels = if repo.labels_required.is_empty() {
-                "all issues".to_string()
-            } else {
-                format!("required labels: {}", repo.labels_required.join(", "))
-            };
-            eprintln!("  {}. {} ({})", i + 1, repo.name, labels);
-        }
-        let line = rl.readline("Remove repos by number (e.g. 1,3), or Enter to keep all: ")?;
-        let line = line.trim();
-        if !line.is_empty() {
-            let indices: Vec<usize> = line.split(',')
-                .filter_map(|s| s.trim().parse::<usize>().ok())
-                .collect();
-            // Remove in reverse order to keep indices stable
-            let mut to_remove: Vec<usize> = indices.into_iter()
-                .filter(|&i| i >= 1 && i <= config.repos.len())
-                .map(|i| i - 1)
-                .collect();
-            to_remove.sort();
-            to_remove.dedup();
-            for i in to_remove.into_iter().rev() {
-                eprintln!("  Removed: {}", config.repos[i].name);
-                config.repos.remove(i);
-            }
-        }
-    }
-    loop {
-        let line = rl.readline("Add a repo (org/name), or Enter to finish: ")?;
-        let line = line.trim();
-        if line.is_empty() { break; }
-
-        let labels_line = rl.readline("  Only flag issues missing these labels, e.g. priority,bug (Enter to track all): ")?;
-        let labels: Vec<String> = labels_line.trim()
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        config.repos.push(ceo::config::RepoConfig {
-            name: line.to_string(),
-            labels_required: labels,
-        });
-    }
-
-    // Team
-    eprintln!("\n--- Team ---");
-    if !config.team.is_empty() {
-        for (i, member) in config.team.iter().enumerate() {
-            let role = if member.role.is_empty() { "" } else { &member.role };
-            eprintln!("  {}. @{} — {} {}", i + 1, member.github, member.name, role);
-        }
-        let line = rl.readline("Remove members by number (e.g. 1,3), or Enter to keep all: ")?;
-        let line = line.trim();
-        if !line.is_empty() {
-            let indices: Vec<usize> = line.split(',')
-                .filter_map(|s| s.trim().parse::<usize>().ok())
-                .collect();
-            let mut to_remove: Vec<usize> = indices.into_iter()
-                .filter(|&i| i >= 1 && i <= config.team.len())
-                .map(|i| i - 1)
-                .collect();
-            to_remove.sort();
-            to_remove.dedup();
-            for i in to_remove.into_iter().rev() {
-                eprintln!("  Removed: @{}", config.team[i].github);
-                config.team.remove(i);
-            }
-        }
-    }
-    loop {
-        let line = rl.readline("Add team member (github username), or Enter to finish: ")?;
-        let github = line.trim().to_string();
-        if github.is_empty() { break; }
-
-        let name_line = rl.readline("  Full name: ")?;
-        let role_line = rl.readline("  Role: ")?;
-
-        config.team.push(ceo::config::TeamMember {
-            github,
-            name: name_line.trim().to_string(),
-            role: role_line.trim().to_string(),
-        });
-    }
-
-    // Project
-    eprintln!("\n--- Project ---");
-    eprintln!("  GitHub Projects board for tracking issue status, dates, priority.");
-    if let Some(ref project) = config.project {
-        eprintln!("  Current: org={}, number={}", project.org, project.number);
-    } else {
-        eprintln!("  Not configured.");
-    }
-
-    let org_default = config.project.as_ref()
-        .map(|p| p.org.as_str())
-        .unwrap_or("");
-    let line = rl.readline(&format!("Project org [{}] (- to clear): ", if org_default.is_empty() { "none" } else { org_default }))?;
-    let line = line.trim();
-    if line == "-" {
-        config.project = None;
-    } else if !line.is_empty() {
-        let org = line.to_string();
-        let num_default = config.project.as_ref().map(|p| p.number).unwrap_or(0);
-        let num_line = rl.readline(&format!("Project number [{}]: ", num_default))?;
-        let num_line = num_line.trim();
-        let number = if num_line.is_empty() {
-            num_default
-        } else {
-            num_line.parse().context("Invalid number for project number")?
-        };
-        config.project = Some(ceo::config::ProjectConfig { org, number });
-    }
+    tui::run_config_editor(&mut config)?;
 
     config.save()?;
     let path = ceo::config::Config::config_path();
-    eprintln!("\nConfig saved to {}", path.display());
+    eprintln!("Config saved to {}", path.display());
     Ok(())
 }

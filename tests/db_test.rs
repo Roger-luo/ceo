@@ -7,6 +7,7 @@ fn make_issue(repo: &str, number: u64, title: &str, updated_at: &str) -> IssueRo
         title: title.to_string(),
         body: Some("body".to_string()),
         state: Some("open".to_string()),
+        kind: "issue".to_string(),
         labels: "[]".to_string(),
         assignees: "[]".to_string(),
         created_at: "2026-03-01T00:00:00Z".to_string(),

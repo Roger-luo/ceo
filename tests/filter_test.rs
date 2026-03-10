@@ -6,6 +6,7 @@ fn make_issue(number: u64, repo: &str, assignees: Vec<&str>, labels: Vec<&str>, 
     Issue {
         number,
         title: format!("Issue #{number}"),
+        kind: "issue".to_string(),
         labels: labels.into_iter().map(String::from).collect(),
         assignees: assignees.into_iter().map(String::from).collect(),
         updated_at: Utc::now() - Duration::days(days_ago),

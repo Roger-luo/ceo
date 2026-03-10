@@ -57,6 +57,7 @@ fn issue_missing_required_labels() {
     let issue = Issue {
         number: 1,
         title: "Test".into(),
+        kind: "issue".into(),
         labels: vec!["bug".into()],
         assignees: vec![],
         updated_at: Utc::now(),

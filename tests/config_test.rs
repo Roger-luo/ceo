@@ -1,9 +1,10 @@
-use ceo::config::Config;
+use ceo::config::{Config, AgentConfig};
 
 #[test]
 fn parse_full_config() {
     let toml_str = r#"
 [agent]
+type = "generic"
 command = "my-agent"
 args = ["--verbose", "--model", "opus"]
 timeout_secs = 300
@@ -30,9 +31,14 @@ role = "reviewer"
     let config: Config = toml::from_str(toml_str).unwrap();
 
     // Agent
-    assert_eq!(config.agent.command, "my-agent");
-    assert_eq!(config.agent.args, vec!["--verbose", "--model", "opus"]);
-    assert_eq!(config.agent.timeout_secs, 300);
+    assert_eq!(config.agent.command(), "my-agent");
+    assert_eq!(config.agent.timeout_secs(), 300);
+    match &config.agent {
+        AgentConfig::Generic(c) => {
+            assert_eq!(c.args, vec!["--verbose", "--model", "opus"]);
+        }
+        _ => panic!("expected Generic agent config"),
+    }
 
     // Repos
     assert_eq!(config.repos.len(), 2);
@@ -63,10 +69,10 @@ name = "acme/app"
 
     let config: Config = toml::from_str(toml_str).unwrap();
 
-    // Defaults for agent
-    assert_eq!(config.agent.command, "claude");
-    assert_eq!(config.agent.args, Vec::<String>::new());
-    assert_eq!(config.agent.timeout_secs, 120);
+    // Defaults to Claude agent
+    assert_eq!(config.agent.agent_type(), "claude");
+    assert_eq!(config.agent.command(), "claude");
+    assert_eq!(config.agent.timeout_secs(), 120);
 
     // Repos
     assert_eq!(config.repos.len(), 1);
@@ -95,9 +101,8 @@ name = "Developer One"
 
     let config = Config::load_from_str(toml_str).unwrap();
 
-    assert_eq!(config.agent.command, "test-agent");
-    assert_eq!(config.agent.timeout_secs, 60);
-    assert_eq!(config.agent.args, Vec::<String>::new());
+    assert_eq!(config.agent.command(), "test-agent");
+    assert_eq!(config.agent.timeout_secs(), 60);
     assert_eq!(config.repos.len(), 1);
     assert_eq!(config.repos[0].name, "org/repo");
     assert_eq!(config.repos[0].labels_required, vec!["approved"]);
@@ -113,15 +118,14 @@ fn parse_config_with_agent_type() {
 [agent]
 type = "codex"
 command = "codex"
-args = ["-q"]
 timeout_secs = 60
 
 [[repos]]
 name = "org/repo"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.agent.agent_type, "codex");
-    assert_eq!(config.agent.command, "codex");
+    assert_eq!(config.agent.agent_type(), "codex");
+    assert_eq!(config.agent.command(), "codex");
 }
 
 #[test]
@@ -131,7 +135,7 @@ fn agent_type_defaults_to_claude() {
 name = "org/repo"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.agent.agent_type, "claude");
+    assert_eq!(config.agent.agent_type(), "claude");
 }
 
 #[test]
@@ -154,7 +158,7 @@ role = "Lead"
 
     let serialized = toml::to_string_pretty(&config).unwrap();
     let reparsed: Config = toml::from_str(&serialized).unwrap();
-    assert_eq!(reparsed.agent.agent_type, "claude");
+    assert_eq!(reparsed.agent.agent_type(), "claude");
     assert_eq!(reparsed.repos[0].name, "org/frontend");
     assert_eq!(reparsed.team[0].github, "alice");
 }
@@ -182,16 +186,33 @@ name = "org/repo"
 "#).unwrap();
 
     config.set_field("agent.type", "codex").unwrap();
-    assert_eq!(config.agent.agent_type, "codex");
+    assert_eq!(config.agent.agent_type(), "codex");
 
     config.set_field("agent.timeout_secs", "60").unwrap();
-    assert_eq!(config.agent.timeout_secs, 60);
+    assert_eq!(config.agent.timeout_secs(), 60);
 
     config.set_field("agent.command", "/usr/bin/codex").unwrap();
-    assert_eq!(config.agent.command, "/usr/bin/codex");
+    assert_eq!(config.agent.command(), "/usr/bin/codex");
+}
+
+#[test]
+fn config_set_generic_args() {
+    let mut config = Config::load_from_str(r#"
+[agent]
+type = "generic"
+command = "llama"
+
+[[repos]]
+name = "org/repo"
+"#).unwrap();
 
     config.set_field("agent.args", "-q,--verbose").unwrap();
-    assert_eq!(config.agent.args, vec!["-q", "--verbose"]);
+    match &config.agent {
+        AgentConfig::Generic(c) => {
+            assert_eq!(c.args, vec!["-q", "--verbose"]);
+        }
+        _ => panic!("expected Generic agent config"),
+    }
 }
 
 #[test]
@@ -235,10 +256,15 @@ triage = "haiku"
 name = "org/repo"
 "#).unwrap();
 
-    assert_eq!(config.agent.model, "sonnet");
-    assert_eq!(config.agent.model_for("summary"), "opus");
-    assert_eq!(config.agent.model_for("triage"), "haiku");
-    assert_eq!(config.agent.model_for("other"), "sonnet");
+    assert_eq!(config.agent.model(), "sonnet");
+    match &config.agent {
+        AgentConfig::Claude(c) => {
+            assert_eq!(c.model_for("summary"), "opus");
+            assert_eq!(c.model_for("triage"), "haiku");
+            assert_eq!(c.model_for("other"), "sonnet");
+        }
+        _ => panic!("expected Claude agent config"),
+    }
 }
 
 #[test]
@@ -253,7 +279,10 @@ name = "org/repo"
 
     config.set_field("agent.models.triage", "haiku").unwrap();
     assert_eq!(config.get_field("agent.models.triage").unwrap(), "haiku");
-    assert_eq!(config.agent.model_for("triage"), "haiku");
+    match &config.agent {
+        AgentConfig::Claude(c) => assert_eq!(c.model_for("triage"), "haiku"),
+        _ => panic!("expected Claude agent config"),
+    }
 }
 
 #[test]
@@ -270,9 +299,14 @@ triage = ["Bash(gh:*)", "Read"]
 name = "org/repo"
 "#).unwrap();
 
-    assert!(config.agent.tools_for("summary").unwrap().is_empty());
-    assert_eq!(config.agent.tools_for("triage").unwrap(), &vec!["Bash(gh:*)".to_string(), "Read".to_string()]);
-    assert!(config.agent.tools_for("other").is_none());
+    match &config.agent {
+        AgentConfig::Claude(c) => {
+            assert!(c.tools_for("summary").unwrap().is_empty());
+            assert_eq!(c.tools_for("triage").unwrap(), &vec!["Bash(gh:*)".to_string(), "Read".to_string()]);
+            assert!(c.tools_for("other").is_none());
+        }
+        _ => panic!("expected Claude agent config"),
+    }
 }
 
 #[test]
@@ -284,7 +318,12 @@ name = "org/repo"
 
     config.set_field("agent.tools.triage", "Bash(gh:*),Read").unwrap();
     assert_eq!(config.get_field("agent.tools.triage").unwrap(), "Bash(gh:*),Read");
-    assert_eq!(config.agent.tools_for("triage").unwrap(), &vec!["Bash(gh:*)".to_string(), "Read".to_string()]);
+    match &config.agent {
+        AgentConfig::Claude(c) => {
+            assert_eq!(c.tools_for("triage").unwrap(), &vec!["Bash(gh:*)".to_string(), "Read".to_string()]);
+        }
+        _ => panic!("expected Claude agent config"),
+    }
 }
 
 #[test]

@@ -54,6 +54,8 @@ pub enum DbError {
     NotFound(std::path::PathBuf),
     #[error("Failed to create data directory {path}")]
     CreateDir { path: std::path::PathBuf, source: std::io::Error },
+    #[error("Failed to delete database at {path}")]
+    DeleteFailed { path: std::path::PathBuf, source: std::io::Error },
 }
 
 #[derive(Debug, thiserror::Error)]

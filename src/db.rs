@@ -427,15 +427,69 @@ pub fn db_path() -> PathBuf {
         .join("ceo.db")
 }
 
+/// Check if the stored schema version matches the current version.
+/// Returns true if the database needs to be reset (version mismatch).
+fn check_schema_version(conn: &Connection) -> Result<bool> {
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_version'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)?;
+
+    if !table_exists {
+        return Ok(true);
+    }
+
+    let stored: Option<u32> = conn
+        .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| row.get(0))
+        .optional()?;
+
+    match stored {
+        Some(v) if v == ceo_schema::SCHEMA_VERSION => Ok(false),
+        _ => Ok(true),
+    }
+}
+
+fn store_schema_version(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        rusqlite::params![ceo_schema::SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
 /// Open (or create) the database at the given path and ensure schema exists.
 pub fn open_db_at(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| DbError::CreateDir { path: parent.to_path_buf(), source: e })?;
     }
+
+    if path.exists() {
+        let conn = Connection::open(path)?;
+        let needs_reset = check_schema_version(&conn)?;
+        if needs_reset {
+            let old_version: u32 = conn
+                .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| row.get(0))
+                .unwrap_or(0);
+            drop(conn);
+            eprintln!(
+                "Database schema updated (v{} → v{}), clearing cache...",
+                old_version,
+                ceo_schema::SCHEMA_VERSION,
+            );
+            std::fs::remove_file(path)
+                .map_err(|e| DbError::DeleteFailed { path: path.to_path_buf(), source: e })?;
+        } else {
+            return Ok(conn);
+        }
+    }
+
     let conn = Connection::open(path)?;
     create_schema(&conn)?;
-    migrate_schema(&conn);
+    store_schema_version(&conn)?;
     Ok(conn)
 }
 
@@ -444,17 +498,39 @@ pub fn open_db() -> Result<Connection> {
     open_db_at(&db_path())
 }
 
+/// Open an existing database at the given path. Returns NotFound if the file doesn't exist.
+/// If the schema version mismatches, the database is deleted and recreated.
+pub fn open_existing_db_at(path: &Path) -> Result<Connection> {
+    if !path.exists() {
+        return Err(DbError::NotFound(path.to_path_buf()));
+    }
+
+    let conn = Connection::open(path)?;
+    let needs_reset = check_schema_version(&conn)?;
+    if needs_reset {
+        let old_version: u32 = conn
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| row.get(0))
+            .unwrap_or(0);
+        drop(conn);
+        eprintln!(
+            "Database schema updated (v{} → v{}), clearing cache...",
+            old_version,
+            ceo_schema::SCHEMA_VERSION,
+        );
+        std::fs::remove_file(path)
+            .map_err(|e| DbError::DeleteFailed { path: path.to_path_buf(), source: e })?;
+        let conn = Connection::open(path)?;
+        create_schema(&conn)?;
+        store_schema_version(&conn)?;
+        return Ok(conn);
+    }
+
+    Ok(conn)
+}
+
 /// Open an existing database. Returns NotFound if the file doesn't exist.
 pub fn open_existing_db() -> Result<Connection> {
-    let path = db_path();
-    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE;
-    match Connection::open_with_flags(&path, flags) {
-        Ok(conn) => {
-            migrate_schema(&conn);
-            Ok(conn)
-        }
-        Err(_) => Err(DbError::NotFound(path)),
-    }
+    open_existing_db_at(&db_path())
 }
 
 /// Run schema migrations on an existing database.
@@ -605,6 +681,10 @@ fn create_schema(conn: &Connection) -> Result<()> {
             discussion_hash     TEXT NOT NULL,
             updated_at          TEXT NOT NULL,
             PRIMARY KEY (repo, issue_number)
+        );
+
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER NOT NULL
         );"
     )?;
     Ok(())

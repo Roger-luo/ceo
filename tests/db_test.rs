@@ -380,3 +380,96 @@ fn query_contributor_stats_empty_repos() {
     let results = db::query_contributor_stats(&conn, &[], "2026-03-01").unwrap();
     assert!(results.is_empty());
 }
+
+// --- Schema version tests ---
+
+#[test]
+fn open_db_stores_schema_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let _conn = db::open_db_at(&path).unwrap();
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let version: u32 = conn
+        .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, ceo_schema::SCHEMA_VERSION);
+}
+
+#[test]
+fn open_db_clears_on_version_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (999);
+             CREATE TABLE issues (id INTEGER PRIMARY KEY);"
+        ).unwrap();
+    }
+
+    let conn = db::open_db_at(&path).unwrap();
+
+    let version: u32 = conn
+        .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, ceo_schema::SCHEMA_VERSION);
+
+    let col_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('issues')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(col_count > 1, "issues table should have full schema, not just id");
+}
+
+#[test]
+fn open_db_clears_pre_versioning_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE issues (
+                repo TEXT NOT NULL,
+                number INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                PRIMARY KEY (repo, number)
+            );"
+        ).unwrap();
+    }
+
+    let conn = db::open_db_at(&path).unwrap();
+
+    let version: u32 = conn
+        .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, ceo_schema::SCHEMA_VERSION);
+}
+
+#[test]
+fn open_existing_db_at_clears_on_version_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (999);
+             CREATE TABLE issues (id INTEGER PRIMARY KEY);"
+        ).unwrap();
+    }
+
+    let conn = db::open_existing_db_at(&path).unwrap();
+
+    let version: u32 = conn
+        .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, ceo_schema::SCHEMA_VERSION);
+}

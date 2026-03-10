@@ -34,7 +34,7 @@ Three tables, created on first database open:
 
 | Column | Type | Notes |
 |---|---|---|
-| repo | TEXT NOT NULL | e.g. `acme-corp/Webapp` |
+| repo | TEXT NOT NULL | e.g. `acme-corp/webapp` |
 | number | INTEGER NOT NULL | |
 | title | TEXT NOT NULL | |
 | body | TEXT | |

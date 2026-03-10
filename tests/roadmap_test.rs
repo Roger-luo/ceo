@@ -11,7 +11,7 @@ fn parse_roadmap_from_toml() {
 
         [[initiatives]]
         name = "Production readiness"
-        repos = ["acme-corp/platform", "acme-corp/webapp"]
+        repos = ["acme-corp/platform", "acme-corp/sdk"]
         description = "Full test coverage"
     "#;
     let roadmap: Roadmap = toml::from_str(toml_str).unwrap();

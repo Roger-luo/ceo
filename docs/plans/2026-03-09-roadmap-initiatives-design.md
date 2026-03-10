@@ -15,11 +15,11 @@ Provide high-level initiative context (product lines, quarterly goals) to the ag
 name = "Platform v2"
 timeframe = "Q1 2026"
 repos = ["acme-corp/platform"]
-description = "Complete API refactor, inspect overhaul, TUI recovery"
+description = "Complete API refactor, dashboard overhaul, CLI recovery"
 
 [[initiatives]]
 name = "Production readiness"
-repos = ["acme-corp/platform", "acme-corp/webapp"]
+repos = ["acme-corp/platform", "acme-corp/sdk"]
 description = "Full test coverage, CI pipeline, public docs"
 ```
 

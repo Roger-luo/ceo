@@ -49,6 +49,17 @@ pub struct CommitRow {
     pub branch: String,
 }
 
+/// One row in the `contributor_stats` table.
+#[derive(Debug, Clone)]
+pub struct ContributorStatsRow {
+    pub repo: String,
+    pub author: String,
+    pub week_start: String, // ISO 8601 date, e.g. "2026-03-02"
+    pub additions: i64,
+    pub deletions: i64,
+    pub commits: i64,
+}
+
 /// Bulk upsert issues. Returns count of rows written.
 pub fn upsert_issues(conn: &Connection, issues: &[IssueRow]) -> Result<usize> {
     let mut count = 0;
@@ -131,6 +142,30 @@ pub fn upsert_commits(conn: &Connection, commits: &[CommitRow]) -> Result<usize>
     Ok(count)
 }
 
+/// Bulk upsert contributor stats. Returns count of rows written.
+pub fn upsert_contributor_stats(conn: &Connection, stats: &[ContributorStatsRow]) -> Result<usize> {
+    let mut count = 0;
+    let mut stmt = conn.prepare(
+        "INSERT OR REPLACE INTO contributor_stats (
+            repo, author, week_start, additions, deletions, commits, synced_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+    let now = Utc::now().to_rfc3339();
+    for row in stats {
+        stmt.execute(rusqlite::params![
+            row.repo,
+            row.author,
+            row.week_start,
+            row.additions,
+            row.deletions,
+            row.commits,
+            now,
+        ])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
 /// Query commits since `since` (ISO 8601 string) for the given repos.
 pub fn query_recent_commits(
     conn: &Connection,
@@ -163,6 +198,47 @@ pub fn query_recent_commits(
             message: row.get(3)?,
             committed_at: row.get(4)?,
             branch: row.get(5)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+/// Query contributor stats since `since` (ISO 8601 date, e.g. "2026-03-01") for the given repos.
+pub fn query_contributor_stats(
+    conn: &Connection,
+    repos: &[String],
+    since: &str,
+) -> Result<Vec<ContributorStatsRow>> {
+    if repos.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders: Vec<String> = (1..=repos.len()).map(|i| format!("?{i}")).collect();
+    let sql = format!(
+        "SELECT repo, author, week_start, additions, deletions, commits
+         FROM contributor_stats
+         WHERE repo IN ({}) AND week_start >= ?{}
+         ORDER BY week_start DESC",
+        placeholders.join(", "),
+        repos.len() + 1,
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+        repos.iter().map(|r| Box::new(r.clone()) as Box<dyn rusqlite::types::ToSql>).collect();
+    params.push(Box::new(since.to_string()));
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_ref.as_slice(), |row| {
+        Ok(ContributorStatsRow {
+            repo: row.get(0)?,
+            author: row.get(1)?,
+            week_start: row.get(2)?,
+            additions: row.get(3)?,
+            deletions: row.get(4)?,
+            commits: row.get(5)?,
         })
     })?;
     let mut result = Vec::new();
@@ -487,6 +563,20 @@ fn migrate_schema(conn: &Connection) {
             PRIMARY KEY (repo, issue_number)
         );"
     );
+
+    // Create contributor_stats table if it doesn't exist
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS contributor_stats (
+            repo        TEXT NOT NULL,
+            author      TEXT NOT NULL,
+            week_start  TEXT NOT NULL,
+            additions   INTEGER NOT NULL DEFAULT 0,
+            deletions   INTEGER NOT NULL DEFAULT 0,
+            commits     INTEGER NOT NULL DEFAULT 0,
+            synced_at   TEXT NOT NULL,
+            PRIMARY KEY (repo, author, week_start)
+        );"
+    );
 }
 
 fn create_schema(conn: &Connection) -> Result<()> {
@@ -531,6 +621,17 @@ fn create_schema(conn: &Connection) -> Result<()> {
             branch          TEXT NOT NULL DEFAULT '',
             synced_at       TEXT NOT NULL,
             PRIMARY KEY (repo, sha)
+        );
+
+        CREATE TABLE IF NOT EXISTS contributor_stats (
+            repo        TEXT NOT NULL,
+            author      TEXT NOT NULL,
+            week_start  TEXT NOT NULL,
+            additions   INTEGER NOT NULL DEFAULT 0,
+            deletions   INTEGER NOT NULL DEFAULT 0,
+            commits     INTEGER NOT NULL DEFAULT 0,
+            synced_at   TEXT NOT NULL,
+            PRIMARY KEY (repo, author, week_start)
         );
 
         CREATE TABLE IF NOT EXISTS sync_log (

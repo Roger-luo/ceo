@@ -1,4 +1,4 @@
-use ceo::db::{self, CommentRow, IssueRow};
+use ceo::db::{self, CommentRow, ContributorStatsRow, IssueRow};
 
 fn make_issue(repo: &str, number: u64, title: &str, updated_at: &str) -> IssueRow {
     IssueRow {
@@ -36,6 +36,7 @@ fn open_db_creates_tables() {
     assert!(tables.contains(&"issues".to_string()));
     assert!(tables.contains(&"comments".to_string()));
     assert!(tables.contains(&"sync_log".to_string()));
+    assert!(tables.contains(&"contributor_stats".to_string()));
 }
 
 #[test]
@@ -250,5 +251,132 @@ fn query_comments_for_issues_empty() {
     let conn = db::open_db_at(&path).unwrap();
 
     let results = db::query_comments_for_issues(&conn, "org/repo", &[]).unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn upsert_contributor_stats_inserts_and_replaces() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let conn = db::open_db_at(&path).unwrap();
+
+    let stats = vec![ContributorStatsRow {
+        repo: "org/repo".to_string(),
+        author: "alice".to_string(),
+        week_start: "2026-03-02".to_string(),
+        additions: 100,
+        deletions: 50,
+        commits: 5,
+    }];
+
+    let count = db::upsert_contributor_stats(&conn, &stats).unwrap();
+    assert_eq!(count, 1);
+
+    // Upsert again with updated values
+    let updated = vec![ContributorStatsRow {
+        additions: 200,
+        ..stats[0].clone()
+    }];
+    let count = db::upsert_contributor_stats(&conn, &updated).unwrap();
+    assert_eq!(count, 1);
+
+    // Verify the value was updated
+    let additions: i64 = conn
+        .query_row(
+            "SELECT additions FROM contributor_stats WHERE author = 'alice'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(additions, 200);
+}
+
+#[test]
+fn query_contributor_stats_filters_by_date_and_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let conn = db::open_db_at(&path).unwrap();
+
+    let stats = vec![
+        ContributorStatsRow {
+            repo: "org/repo".to_string(),
+            author: "alice".to_string(),
+            week_start: "2026-03-02".to_string(),
+            additions: 100,
+            deletions: 50,
+            commits: 5,
+        },
+        ContributorStatsRow {
+            repo: "org/repo".to_string(),
+            author: "alice".to_string(),
+            week_start: "2026-01-06".to_string(),
+            additions: 30,
+            deletions: 10,
+            commits: 2,
+        },
+        ContributorStatsRow {
+            repo: "org/other".to_string(),
+            author: "bob".to_string(),
+            week_start: "2026-03-02".to_string(),
+            additions: 200,
+            deletions: 80,
+            commits: 8,
+        },
+    ];
+    db::upsert_contributor_stats(&conn, &stats).unwrap();
+
+    let results = db::query_contributor_stats(
+        &conn,
+        &["org/repo".to_string()],
+        "2026-03-01",
+    )
+    .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].author, "alice");
+    assert_eq!(results[0].additions, 100);
+}
+
+#[test]
+fn query_contributor_stats_multiple_repos() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let conn = db::open_db_at(&path).unwrap();
+
+    let stats = vec![
+        ContributorStatsRow {
+            repo: "org/repo".to_string(),
+            author: "alice".to_string(),
+            week_start: "2026-03-02".to_string(),
+            additions: 100,
+            deletions: 50,
+            commits: 5,
+        },
+        ContributorStatsRow {
+            repo: "org/other".to_string(),
+            author: "alice".to_string(),
+            week_start: "2026-03-02".to_string(),
+            additions: 50,
+            deletions: 20,
+            commits: 3,
+        },
+    ];
+    db::upsert_contributor_stats(&conn, &stats).unwrap();
+
+    let results = db::query_contributor_stats(
+        &conn,
+        &["org/repo".to_string(), "org/other".to_string()],
+        "2026-03-01",
+    )
+    .unwrap();
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn query_contributor_stats_empty_repos() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let conn = db::open_db_at(&path).unwrap();
+
+    let results = db::query_contributor_stats(&conn, &[], "2026-03-01").unwrap();
     assert!(results.is_empty());
 }

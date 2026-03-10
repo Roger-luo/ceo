@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use chrono::Utc;
 use log::{debug, info};
 
@@ -45,7 +48,9 @@ impl Task for FetchDataTask {
         false
     }
 
-    fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
+    fn run<'a, 'ctx>(&'a self, ctx: &'a mut PipelineContext<'ctx>) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>
+    where 'ctx: 'a {
+        Box::pin(async move {
         for repo_config in &ctx.config.repos {
             info!("Processing repo: {}", repo_config.name);
             let repo_names = vec![repo_config.name.clone()];
@@ -114,5 +119,6 @@ impl Task for FetchDataTask {
         }
 
         Ok(())
+        })
     }
 }

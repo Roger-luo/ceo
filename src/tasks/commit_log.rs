@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::report::github_link;
 
@@ -23,7 +25,9 @@ impl Task for BuildCommitLogTask {
         false
     }
 
-    fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
+    fn run<'a, 'ctx>(&'a self, ctx: &'a mut PipelineContext<'ctx>) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>
+    where 'ctx: 'a {
+        Box::pin(async move {
         for repo_config in &ctx.config.repos {
             let commit_rows = ctx.commit_rows.get(&repo_config.name);
             let commit_log = match commit_rows {
@@ -71,5 +75,6 @@ impl Task for BuildCommitLogTask {
         }
 
         Ok(())
+        })
     }
 }

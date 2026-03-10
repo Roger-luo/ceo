@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use crate::report::TeamStats;
 
 use super::{PipelineContext, Result, Task};
@@ -21,7 +24,9 @@ impl Task for TeamStatsTask {
         ctx.config.team.is_empty()
     }
 
-    fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
+    fn run<'a, 'ctx>(&'a self, ctx: &'a mut PipelineContext<'ctx>) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>
+    where 'ctx: 'a {
+        Box::pin(async move {
         ctx.team_stats = ctx
             .config
             .team
@@ -63,5 +68,6 @@ impl Task for TeamStatsTask {
             .collect();
 
         Ok(())
+        })
     }
 }

@@ -1,4 +1,4 @@
-pub trait Prompt {
+pub trait Prompt: Send + Sync {
     fn render(&self) -> String;
     fn kind(&self) -> &str;
     /// Tools the agent must have access to for this prompt.

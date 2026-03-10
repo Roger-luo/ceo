@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use ceo::agent::Agent;
 use ceo::config::Config;
 use ceo::db;
@@ -8,13 +11,15 @@ use ceo::prompt::Prompt;
 struct MockAgent;
 
 impl Agent for MockAgent {
-    fn invoke(&self, _prompt: &dyn Prompt) -> Result<String, AgentError> {
-        Ok("<done>Mock work completed.</done><in_progress>Mock active work.</in_progress>".to_string())
+    fn invoke(&self, _prompt: &dyn Prompt) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + '_>> {
+        Box::pin(async {
+            Ok("<done>Mock work completed.</done><in_progress>Mock active work.</in_progress>".to_string())
+        })
     }
 }
 
-#[test]
-fn pipeline_reads_from_database() {
+#[tokio::test]
+async fn pipeline_reads_from_database() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test.db");
     let conn = db::open_db_at(&db_path).unwrap();
@@ -60,7 +65,7 @@ fn pipeline_reads_from_database() {
     "#).unwrap();
 
     let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
-    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress, None).unwrap();
+    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress, None).await.unwrap();
     assert_eq!(report.repos.len(), 1);
     assert_eq!(report.repos[0].name, "org/frontend");
     assert_eq!(report.repos[0].done.as_deref(), Some("Mock work completed."));
@@ -70,8 +75,8 @@ fn pipeline_reads_from_database() {
     assert_eq!(report.team_stats[0].active, 1);
 }
 
-#[test]
-fn pipeline_handles_empty_database() {
+#[tokio::test]
+async fn pipeline_handles_empty_database() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test.db");
     let conn = db::open_db_at(&db_path).unwrap();
@@ -82,13 +87,13 @@ fn pipeline_handles_empty_database() {
     "#).unwrap();
 
     let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
-    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress, None).unwrap();
+    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress, None).await.unwrap();
     assert_eq!(report.repos.len(), 1);
     assert!(!report.repos[0].has_activity());
 }
 
-#[test]
-fn pipeline_includes_contributor_stats_in_team_overview() {
+#[tokio::test]
+async fn pipeline_includes_contributor_stats_in_team_overview() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test.db");
     let conn = db::open_db_at(&db_path).unwrap();
@@ -135,7 +140,7 @@ fn pipeline_includes_contributor_stats_in_team_overview() {
     "#).unwrap();
 
     let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
-    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress, None).unwrap();
+    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-09", &NullProgress, None).await.unwrap();
     assert_eq!(report.team_stats[0].additions, 150);
     assert_eq!(report.team_stats[0].deletions, 40);
 }

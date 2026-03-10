@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::hash::{Hash, Hasher};
+use std::pin::Pin;
 
 use log::debug;
 
@@ -49,7 +51,9 @@ impl Task for SummarizeIssuesTask {
         false
     }
 
-    fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
+    fn run<'a, 'ctx>(&'a self, ctx: &'a mut PipelineContext<'ctx>) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>
+    where 'ctx: 'a {
+        Box::pin(async move {
         let batch_size = ctx.config.batch_size();
 
         for repo_config in &ctx.config.repos {
@@ -155,7 +159,7 @@ impl Task for SummarizeIssuesTask {
                     previous_summary: Some(cache.discussion_summary.clone()),
                     summary_length: ctx.summary_length.clone(),
                 };
-                let new_disc = ctx.agent.invoke(&disc_prompt).map_err(|e| {
+                let new_disc = ctx.agent.invoke(&disc_prompt).await.map_err(|e| {
                     eprintln!("  Error updating discussion #{}: {e}", issue.number);
                     e
                 })?;
@@ -189,7 +193,7 @@ impl Task for SummarizeIssuesTask {
                         body: data.body.clone(),
                         summary_length: ctx.summary_length.clone(),
                     };
-                    let issue_sum = ctx.agent.invoke(&desc_prompt).map_err(|e| {
+                    let issue_sum = ctx.agent.invoke(&desc_prompt).await.map_err(|e| {
                         eprintln!("  Error summarizing #{}: {e}", issue.number);
                         e
                     })?;
@@ -220,7 +224,7 @@ impl Task for SummarizeIssuesTask {
                         issues: entries,
                         summary_length: ctx.summary_length.clone(),
                     };
-                    let response = ctx.agent.invoke(&batch_prompt).map_err(|e| {
+                    let response = ctx.agent.invoke(&batch_prompt).await.map_err(|e| {
                         eprintln!("  Error in batch summarize: {e}");
                         e
                     })?;
@@ -249,7 +253,7 @@ impl Task for SummarizeIssuesTask {
                                 body: data.body.clone(),
                                 summary_length: ctx.summary_length.clone(),
                             };
-                            let issue_sum = ctx.agent.invoke(&desc_prompt).map_err(|e| {
+                            let issue_sum = ctx.agent.invoke(&desc_prompt).await.map_err(|e| {
                                 eprintln!("  Error summarizing #{}: {e}", issue.number);
                                 e
                             })?;
@@ -275,7 +279,7 @@ impl Task for SummarizeIssuesTask {
                             previous_summary: None,
                             summary_length: ctx.summary_length.clone(),
                         };
-                        ctx.agent.invoke(&disc_prompt).map_err(|e| {
+                        ctx.agent.invoke(&disc_prompt).await.map_err(|e| {
                             eprintln!("  Error summarizing discussion #{}: {e}", issue.number);
                             e
                         })?
@@ -314,5 +318,6 @@ impl Task for SummarizeIssuesTask {
         }
 
         Ok(())
+        })
     }
 }

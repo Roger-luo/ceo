@@ -38,7 +38,7 @@ pub struct NullProgress;
 
 impl PipelineProgress for NullProgress {}
 
-pub fn run_pipeline(
+pub async fn run_pipeline(
     config: &Config,
     conn: &rusqlite::Connection,
     agent: &dyn Agent,
@@ -65,7 +65,7 @@ pub fn run_pipeline(
             continue;
         }
         progress.task_start(task.name(), task.step_count(&ctx));
-        task.run(&mut ctx)?;
+        task.run(&mut ctx).await?;
         progress.task_done(task.name());
     }
 

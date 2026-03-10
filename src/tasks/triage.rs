@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use log::debug;
 
 use crate::filter;
@@ -39,7 +42,9 @@ impl Task for TriageTask {
             .all(|repo_config| repo_config.labels_required.is_empty())
     }
 
-    fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
+    fn run<'a, 'ctx>(&'a self, ctx: &'a mut PipelineContext<'ctx>) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>
+    where 'ctx: 'a {
+        Box::pin(async move {
         for (section_idx, repo_config) in ctx.config.repos.iter().enumerate() {
             let repo_name = &repo_config.name;
             let issues = match ctx.issues.get(repo_name) {
@@ -83,7 +88,7 @@ impl Task for TriageTask {
                     body,
                     comments: comments_text,
                 };
-                let triage_summary = ctx.agent.invoke(&triage_prompt).map_err(|e| {
+                let triage_summary = ctx.agent.invoke(&triage_prompt).await.map_err(|e| {
                     eprintln!("  Error triaging #{}: {e}", issue.number);
                     e
                 })?;
@@ -102,5 +107,6 @@ impl Task for TriageTask {
         }
 
         Ok(())
+        })
     }
 }

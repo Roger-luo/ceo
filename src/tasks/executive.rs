@@ -1,4 +1,6 @@
 use std::fmt::Write;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::error::AgentError;
 use crate::prompt::ExecutiveSummaryPrompt;
@@ -24,7 +26,9 @@ impl Task for ExecutiveSummaryTask {
         ctx.template.is_none()
     }
 
-    fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
+    fn run<'a, 'ctx>(&'a self, ctx: &'a mut PipelineContext<'ctx>) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>
+    where 'ctx: 'a {
+        Box::pin(async move {
         let template_name = match &ctx.template {
             Some(name) => name.clone(),
             None => return Ok(()),
@@ -55,7 +59,7 @@ impl Task for ExecutiveSummaryTask {
             repo_summaries: repo_text,
             template: template_text,
         };
-        let summary = ctx.agent.invoke(&prompt).map_err(|e| {
+        let summary = ctx.agent.invoke(&prompt).await.map_err(|e| {
             eprintln!("  Error generating executive summary: {e}");
             e
         })?;
@@ -63,5 +67,6 @@ impl Task for ExecutiveSummaryTask {
         ctx.executive_summary = Some(summary);
 
         Ok(())
+        })
     }
 }

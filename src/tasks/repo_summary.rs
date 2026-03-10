@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::hash::{Hash, Hasher};
+use std::pin::Pin;
 
 use crate::db::{self, CommitRow, IssueRow};
 use crate::prompt::WeeklySummaryPrompt;
@@ -42,7 +44,9 @@ impl Task for RepoSummaryTask {
         false
     }
 
-    fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
+    fn run<'a, 'ctx>(&'a self, ctx: &'a mut PipelineContext<'ctx>) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>
+    where 'ctx: 'a {
+        Box::pin(async move {
         let repo_names: Vec<String> = ctx.config.repos.iter().map(|r| r.name.clone()).collect();
 
         for repo_name in &repo_names {
@@ -103,7 +107,7 @@ impl Task for RepoSummaryTask {
                             previous_summary: Some(cached_summary.clone()),
                             initiatives: initiatives_text.clone(),
                         };
-                        let summary = ctx.agent.invoke(&prompt).map_err(|e| {
+                        let summary = ctx.agent.invoke(&prompt).await.map_err(|e| {
                             eprintln!("  Error generating repo summary: {e}");
                             e
                         })?;
@@ -124,7 +128,7 @@ impl Task for RepoSummaryTask {
                         previous_summary: None,
                         initiatives: initiatives_text.clone(),
                     };
-                    let summary = ctx.agent.invoke(&prompt).map_err(|e| {
+                    let summary = ctx.agent.invoke(&prompt).await.map_err(|e| {
                         eprintln!("  Error generating repo summary: {e}");
                         e
                     })?;
@@ -153,5 +157,6 @@ impl Task for RepoSummaryTask {
         }
 
         Ok(())
+        })
     }
 }

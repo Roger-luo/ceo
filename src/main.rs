@@ -92,13 +92,14 @@ enum RoadmapAction {
     },
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Report { days, month, template } => cmd_report(days, month, template),
-        Commands::Interactive => cmd_interactive(),
+        Commands::Report { days, month, template } => cmd_report(days, month, template).await,
+        Commands::Interactive => cmd_interactive().await,
         Commands::Sync => cmd_sync(),
         Commands::ClearCache => cmd_clear_cache(),
         Commands::Config { action } => cmd_config(action),
@@ -233,27 +234,27 @@ fn resolve_date_range(days: i64, month: Option<String>) -> Result<(String, Strin
     }
 }
 
-fn cmd_report(days: i64, month: Option<String>, template: Option<String>) -> Result<()> {
+async fn cmd_report(days: i64, month: Option<String>, template: Option<String>) -> Result<()> {
     let config = ceo::config::Config::load()?;
     let conn = ceo::db::open_existing_db()?;
     let agent = ceo::agent::AgentKind::from_config(&config.agent);
     let progress = ReportProgress::new();
     let (since, label) = resolve_date_range(days, month)?;
 
-    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, &since, &label, &progress, template.as_deref())?;
+    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, &since, &label, &progress, template.as_deref()).await?;
     let markdown = ceo::report::render_markdown(&report_data);
     print!("{markdown}");
     Ok(())
 }
 
-fn cmd_interactive() -> Result<()> {
+async fn cmd_interactive() -> Result<()> {
     let config = ceo::config::Config::load()?;
     let conn = ceo::db::open_existing_db()?;
     let agent = ceo::agent::AgentKind::from_config(&config.agent);
     let progress = ReportProgress::new();
     let (since, label) = resolve_date_range(7, None)?;
 
-    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, &since, &label, &progress, None)?;
+    let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, &since, &label, &progress, None).await?;
     let markdown = ceo::report::render_markdown(&report_data);
 
     tui::run_tui(markdown)?;

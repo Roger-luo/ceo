@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use ceo::agent::Agent;
 use ceo::config::Config;
 use ceo::db;
@@ -9,18 +12,20 @@ use ceo::report::render_markdown;
 struct MockAgent;
 
 impl Agent for MockAgent {
-    fn invoke(&self, prompt: &dyn Prompt) -> Result<String, AgentError> {
+    fn invoke(&self, prompt: &dyn Prompt) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + '_>> {
         let rendered = prompt.render();
-        if rendered.contains("Write a concise summary for repo") {
-            Ok("<done>Dark mode feature merged.</done>\n<in_progress>Memory leak identified and being fixed.</in_progress>".to_string())
-        } else {
-            Ok("This issue is about updating documentation. Suggest adding priority:low label.".to_string())
-        }
+        Box::pin(async move {
+            if rendered.contains("Write a concise summary for repo") {
+                Ok("<done>Dark mode feature merged.</done>\n<in_progress>Memory leak identified and being fixed.</in_progress>".to_string())
+            } else {
+                Ok("This issue is about updating documentation. Suggest adding priority:low label.".to_string())
+            }
+        })
     }
 }
 
-#[test]
-fn full_pipeline_produces_valid_markdown() {
+#[tokio::test]
+async fn full_pipeline_produces_valid_markdown() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test.db");
     let conn = db::open_db_at(&db_path).unwrap();
@@ -106,7 +111,7 @@ fn full_pipeline_produces_valid_markdown() {
     "#).unwrap();
 
     let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
-    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-06", &NullProgress, None).unwrap();
+    let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-06", &NullProgress, None).await.unwrap();
     let markdown = render_markdown(&report);
 
     assert!(markdown.contains("org/frontend"));

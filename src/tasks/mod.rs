@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::agent::Agent;
 use crate::config::Config;
@@ -23,7 +25,8 @@ pub trait Task {
     fn description(&self) -> &str;
     fn step_count(&self, ctx: &PipelineContext) -> usize;
     fn should_skip(&self, ctx: &PipelineContext) -> bool;
-    fn run(&self, ctx: &mut PipelineContext) -> Result<()>;
+    fn run<'a, 'ctx>(&'a self, ctx: &'a mut PipelineContext<'ctx>) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>
+    where 'ctx: 'a;
 }
 
 /// Shared mutable state passed between pipeline tasks.

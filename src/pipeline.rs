@@ -393,12 +393,18 @@ pub fn run_pipeline(
         .team
         .iter()
         .map(|member| {
-            let assigned: Vec<_> = all_recent_issues
+            let (active, closed_this_week) = all_recent_issues
                 .iter()
                 .filter(|i| i.assignees.contains(&member.github))
-                .collect();
-            let active = assigned.iter().filter(|i| i.state.eq_ignore_ascii_case("OPEN")).count();
-            let closed_this_week = assigned.iter().filter(|i| i.state.eq_ignore_ascii_case("CLOSED")).count();
+                .fold((0, 0), |(open, closed), i| {
+                    if i.state.eq_ignore_ascii_case("OPEN") {
+                        (open + 1, closed)
+                    } else if i.state.eq_ignore_ascii_case("CLOSED") {
+                        (open, closed + 1)
+                    } else {
+                        (open, closed)
+                    }
+                });
             TeamStats {
                 name: member.name.clone(),
                 github: member.github.clone(),

@@ -395,6 +395,69 @@ fn fetch_commits_for_sync(
     Ok(all_commits)
 }
 
+/// Fetch contributor stats (weekly additions/deletions/commits per author)
+/// via the GitHub REST API. Returns one row per author per week.
+fn fetch_contributor_stats(
+    gh_runner: &dyn GhRunner,
+    repo: &str,
+) -> std::result::Result<Vec<db::ContributorStatsRow>, GhError> {
+    let endpoint = format!("repos/{repo}/stats/contributors");
+    let json = gh_runner.run_gh(&["api", &endpoint])?;
+
+    // The API returns 202 with empty body while computing — treat as empty
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&json)?;
+    let mut rows = Vec::new();
+
+    for contributor in &parsed {
+        let author = contributor
+            .get("author")
+            .and_then(|a| a.get("login"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        let weeks = match contributor.get("weeks").and_then(|w| w.as_array()) {
+            Some(w) => w,
+            None => continue,
+        };
+
+        for week in weeks {
+            let timestamp = week.get("w").and_then(|v| v.as_i64()).unwrap_or(0);
+            let additions = week.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
+            let deletions = week.get("d").and_then(|v| v.as_i64()).unwrap_or(0);
+            let commits = week.get("c").and_then(|v| v.as_i64()).unwrap_or(0);
+
+            // Skip weeks with zero activity
+            if additions == 0 && deletions == 0 && commits == 0 {
+                continue;
+            }
+
+            // Convert Unix timestamp to ISO 8601 date
+            let week_start = chrono::DateTime::from_timestamp(timestamp, 0)
+                .map(|dt| dt.format("%Y-%m-%d").to_string())
+                .unwrap_or_default();
+
+            if week_start.is_empty() {
+                continue;
+            }
+
+            rows.push(db::ContributorStatsRow {
+                repo: repo.to_string(),
+                author: author.to_string(),
+                week_start,
+                additions,
+                deletions,
+                commits,
+            });
+        }
+    }
+
+    Ok(rows)
+}
+
 // --- Progress reporting ---
 
 /// Callback trait for sync progress. All methods have default no-ops so tests
@@ -516,7 +579,21 @@ pub fn run_sync(
             }
         };
 
-        // 4. Build IssueRows, merging project data
+        // 4. Fetch contributor stats (weekly additions/deletions per author)
+        progress.phase(repo, "Fetching contributor stats");
+        let contributor_stats = match fetch_contributor_stats(gh_runner, repo) {
+            Ok(stats) => {
+                log::info!("Fetched {} contributor stat entries for {repo}", stats.len());
+                stats
+            }
+            Err(e) => {
+                log::warn!("Failed to fetch contributor stats for {repo}: {e}");
+                progress.warn(&format!("Failed to fetch contributor stats for {repo}: {e}"));
+                Vec::new()
+            }
+        };
+
+        // 5. Build IssueRows, merging project data
         progress.phase(repo, "Saving to database");
         let issue_rows: Vec<IssueRow> = items
             .into_iter()
@@ -541,7 +618,7 @@ pub fn run_sync(
             })
             .collect();
 
-        // 5. Upsert in a transaction
+        // 6. Upsert in a transaction
         let issues_count = issue_rows.len();
         let comments_count = all_comments.len();
         let commits_count = commit_rows.len();
@@ -552,6 +629,7 @@ pub fn run_sync(
             db::upsert_issues(&tx, &issue_rows)?;
             db::upsert_comments(&tx, &all_comments)?;
             db::upsert_commits(&tx, &commit_rows)?;
+            db::upsert_contributor_stats(&tx, &contributor_stats)?;
             db::log_sync(&tx, repo, issues_count, comments_count)?;
             tx.commit().map_err(crate::error::DbError::from)?;
         }

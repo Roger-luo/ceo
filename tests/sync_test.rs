@@ -35,6 +35,17 @@ impl GhRunner for MockSyncGh {
             }]"#
             .to_string());
         }
+        // gh api repos/.../stats/contributors
+        if args.iter().any(|a| *a == "api") && args.iter().any(|a| a.contains("stats/contributors")) {
+            return Ok(r#"[{
+                "author": {"login": "alice"},
+                "total": 10,
+                "weeks": [
+                    {"w": 1709424000, "a": 100, "d": 50, "c": 5},
+                    {"w": 1710028800, "a": 200, "d": 80, "c": 8}
+                ]
+            }]"#.to_string());
+        }
         // gh api repos/.../commits
         if args.iter().any(|a| *a == "api") && args.iter().any(|a| a.contains("commits")) {
             return Ok(r#"[{
@@ -160,4 +171,29 @@ name = "org/repo"
     assert_eq!(result2.repos.len(), 1);
     // The mock always returns the same issue regardless of --search, so count stays 1
     assert_eq!(result2.repos[0].issues_synced, 1);
+}
+
+#[test]
+fn sync_fetches_and_stores_contributor_stats() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let conn = db::open_db_at(&db_path).unwrap();
+
+    let config: Config = toml::from_str(r#"
+[[repos]]
+name = "org/repo"
+"#).unwrap();
+
+    let result = run_sync(&config, &MockSyncGh, &conn, &ceo::sync::NoProgress).unwrap();
+    assert_eq!(result.repos.len(), 1);
+
+    // Verify contributor stats were stored
+    let stats = db::query_contributor_stats(
+        &conn,
+        &["org/repo".to_string()],
+        "2024-01-01",
+    ).unwrap();
+    // Should have 2 weeks for alice (both have non-zero activity)
+    assert_eq!(stats.len(), 2);
+    assert_eq!(stats[0].author, "alice");
 }

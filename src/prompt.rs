@@ -99,7 +99,9 @@ impl Prompt for WeeklySummaryPrompt {
             String::new()
         } else {
             format!(
-                "\n\nRecent commits (may span multiple branches):\n{}",
+                "\n\nDirect commits (these represent development work — some branches \
+                 operate without PRs, so commits may be the ONLY record of significant work; \
+                 treat them with equal importance to issues/PRs):\n{}",
                 self.commit_log
             )
         };
@@ -124,7 +126,10 @@ impl Prompt for WeeklySummaryPrompt {
             "Write a concise summary for repo {}.\n\
              All information you need is provided below — do NOT fetch external data.\n\
              Preserve [@handle](https://github.com/handle) link format.\n\n\
-             Issue/PR summaries:\n{}{}{}{}\n\n\
+             Issue/PR activity:\n{}{}{}{}\n\n\
+             IMPORTANT: Summarize ALL activity — both issues/PRs AND direct commits. \
+             Some branches have no PRs and only commits; their work is equally important. \
+             Call out significant commits by branch when relevant.\n\n\
              Respond ONLY with XML tags — no other text. Use these tags:\n\
              <done>1-2 sentences: what got completed or merged</done>\n\
              <in_progress>1-2 sentences: active work, open blockers</in_progress>\n\

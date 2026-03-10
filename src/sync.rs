@@ -404,15 +404,18 @@ fn fetch_contributor_stats(
     let endpoint = format!("repos/{repo}/stats/contributors");
     let json = gh_runner.run_gh(&["api", &endpoint])?;
 
-    // The API returns 202 with empty body while computing — treat as empty
+    // The API returns 202 with a non-array body while computing stats — treat as empty
     if json.trim().is_empty() {
         return Ok(Vec::new());
     }
-
-    let parsed: Vec<serde_json::Value> = serde_json::from_str(&json)?;
+    let value: serde_json::Value = serde_json::from_str(&json)?;
+    let parsed = match value.as_array() {
+        Some(arr) => arr,
+        None => return Ok(Vec::new()), // 202 response: stats not yet computed
+    };
     let mut rows = Vec::new();
 
-    for contributor in &parsed {
+    for contributor in parsed {
         let author = match contributor
             .get("author")
             .and_then(|a| a.get("login"))

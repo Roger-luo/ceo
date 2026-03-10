@@ -97,7 +97,7 @@ impl Task for FetchDataTask {
 
             // Query contributor stats for this repo.
             // `since` is RFC 3339 but week_start is a plain date; truncate to YYYY-MM-DD.
-            let since_date = &ctx.since[..10];
+            let since_date = ctx.since.get(..10).unwrap_or(&ctx.since);
             let repo_names_for_stats = vec![repo_config.name.clone()];
             let cs_rows =
                 db::query_contributor_stats(ctx.conn, &repo_names_for_stats, since_date)?;

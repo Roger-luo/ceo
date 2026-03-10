@@ -413,11 +413,14 @@ fn fetch_contributor_stats(
     let mut rows = Vec::new();
 
     for contributor in &parsed {
-        let author = contributor
+        let author = match contributor
             .get("author")
             .and_then(|a| a.get("login"))
             .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
+        {
+            Some(login) => login,
+            None => continue, // skip deleted accounts / bots with null author
+        };
 
         let weeks = match contributor.get("weeks").and_then(|w| w.as_array()) {
             Some(w) => w,

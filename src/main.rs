@@ -224,6 +224,9 @@ fn resolve_date_range(days: i64, month: Option<String>) -> Result<(String, Strin
         let label = format!("{}", first.format("%B %Y"));
         Ok((since, label))
     } else {
+        if days < 7 {
+            anyhow::bail!("Report timeframe must be at least 7 days (contributor stats have weekly resolution). Use --days 7 or greater.");
+        }
         let since = (Utc::now() - Duration::days(days)).to_rfc3339();
         let label = Utc::now().format("%Y-%m-%d").to_string();
         Ok((since, label))

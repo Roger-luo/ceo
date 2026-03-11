@@ -119,7 +119,7 @@ async fn full_pipeline_produces_valid_markdown() {
         role = "Backend"
     "#).unwrap();
 
-    let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+    let since = "2026-03-01T00:00:00Z".to_string();
     let report = run_pipeline(&config, &conn, &MockAgent, &since, "2026-03-06", &NullProgress, None).await.unwrap();
     let markdown = render_markdown(&report);
 

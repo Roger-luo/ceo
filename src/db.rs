@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::DbError;
 
-pub use ceo_schema::{CommentRow, CommitRow, ContributorStatsRow, IssueRow};
+pub use ceo_schema::{CommentRow, CommitRow, CommitStatsRow, ContributorStatsRow, EmailMappingRow, IssueRow};
 
 type Result<T> = std::result::Result<T, DbError>;
 
@@ -194,6 +194,94 @@ pub fn query_contributor_stats(
     for row in rows {
         result.push(row?);
     }
+    Ok(result)
+}
+
+/// Bulk upsert commit-level stats (from git log). Returns count of rows written.
+pub fn upsert_commit_stats(conn: &Connection, stats: &[CommitStatsRow]) -> Result<usize> {
+    let mut count = 0;
+    let mut stmt = conn.prepare(
+        "INSERT OR REPLACE INTO commit_stats (
+            repo, sha, author, committed_at, additions, deletions, branch, synced_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?;
+    let now = Utc::now().to_rfc3339();
+    for row in stats {
+        stmt.execute(rusqlite::params![
+            row.repo,
+            row.sha,
+            row.author,
+            row.committed_at,
+            row.additions,
+            row.deletions,
+            row.branch,
+            now,
+        ])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Query commit-level stats since `since` (ISO 8601 date) for the given repos.
+pub fn query_commit_stats(
+    conn: &Connection,
+    repos: &[String],
+    since: &str,
+) -> Result<Vec<CommitStatsRow>> {
+    if repos.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders: Vec<String> = (1..=repos.len()).map(|i| format!("?{i}")).collect();
+    let sql = format!(
+        "SELECT repo, sha, author, committed_at, additions, deletions, branch
+         FROM commit_stats
+         WHERE repo IN ({}) AND committed_at >= ?{}
+         ORDER BY committed_at DESC",
+        placeholders.join(", "),
+        repos.len() + 1,
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+        repos.iter().map(|r| Box::new(r.clone()) as Box<dyn rusqlite::types::ToSql>).collect();
+    params.push(Box::new(since.to_string()));
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_ref.as_slice(), |row| {
+        Ok(CommitStatsRow {
+            repo: row.get(0)?,
+            sha: row.get(1)?,
+            author: row.get(2)?,
+            committed_at: row.get(3)?,
+            additions: row.get(4)?,
+            deletions: row.get(5)?,
+            branch: row.get(6)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+/// Cache a resolved email→GitHub handle mapping.
+pub fn upsert_email_mapping(conn: &Connection, email: &str, github: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO email_to_github (email, github, resolved_at)
+         VALUES (?1, ?2, ?3)",
+        rusqlite::params![email, github, Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+/// Look up a cached email→GitHub handle mapping. Returns None if not cached.
+pub fn query_email_mapping(conn: &Connection, email: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT github FROM email_to_github WHERE email = ?1",
+    )?;
+    let result = stmt
+        .query_row(rusqlite::params![email], |row| row.get::<_, String>(0))
+        .optional()?;
     Ok(result)
 }
 
@@ -588,6 +676,24 @@ fn create_schema(conn: &Connection) -> Result<()> {
             PRIMARY KEY (repo, author, week_start)
         );
 
+        CREATE TABLE IF NOT EXISTS commit_stats (
+            repo         TEXT NOT NULL,
+            sha          TEXT NOT NULL,
+            author       TEXT NOT NULL,
+            committed_at TEXT NOT NULL,
+            additions    INTEGER NOT NULL DEFAULT 0,
+            deletions    INTEGER NOT NULL DEFAULT 0,
+            branch       TEXT NOT NULL,
+            synced_at    TEXT NOT NULL,
+            PRIMARY KEY (repo, sha)
+        );
+
+        CREATE TABLE IF NOT EXISTS email_to_github (
+            email       TEXT PRIMARY KEY,
+            github      TEXT NOT NULL,
+            resolved_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS sync_log (
             repo            TEXT NOT NULL,
             synced_at       TEXT NOT NULL,
@@ -617,4 +723,54 @@ fn create_schema(conn: &Connection) -> Result<()> {
         );"
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_stats_table_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db_at(&db_path).unwrap();
+        let _ = conn.prepare("SELECT count(*) FROM commit_stats").unwrap().query([]).unwrap();
+        let _ = conn.prepare("SELECT count(*) FROM email_to_github").unwrap().query([]).unwrap();
+    }
+
+    #[test]
+    fn upsert_and_query_commit_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db_at(&dir.path().join("test.db")).unwrap();
+
+        let rows = vec![CommitStatsRow {
+            repo: "org/repo".into(),
+            sha: "abc123".into(),
+            author: "alice".into(),
+            committed_at: "2026-03-05".into(),
+            additions: 100,
+            deletions: 50,
+            branch: "main".into(),
+        }];
+        let count = upsert_commit_stats(&conn, &rows).unwrap();
+        assert_eq!(count, 1);
+
+        let result = query_commit_stats(&conn, &["org/repo".into()], "2026-03-01").unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].author, "alice");
+        assert_eq!(result[0].additions, 100);
+    }
+
+    #[test]
+    fn upsert_and_query_email_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db_at(&dir.path().join("test.db")).unwrap();
+
+        upsert_email_mapping(&conn, "alice@example.com", "alice").unwrap();
+        let result = query_email_mapping(&conn, "alice@example.com").unwrap();
+        assert_eq!(result, Some("alice".to_string()));
+
+        let missing = query_email_mapping(&conn, "nobody@example.com").unwrap();
+        assert_eq!(missing, None);
+    }
 }

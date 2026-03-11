@@ -63,7 +63,8 @@ impl Task for TriageTask {
 
             let mut flagged_issues = Vec::new();
 
-            for issue in &flagged_refs {
+            for (idx, issue) in flagged_refs.iter().enumerate() {
+                ctx.progress.phase(&format!("Triaging {repo_name} #{} ({}/{})", issue.number, idx + 1, flagged_refs.len()));
                 debug!("Triaging issue #{}: {}", issue.number, issue.title);
 
                 let body = ctx

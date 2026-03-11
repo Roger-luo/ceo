@@ -49,7 +49,8 @@ impl Task for RepoSummaryTask {
         Box::pin(async move {
         let repo_names: Vec<String> = ctx.config.repos.iter().map(|r| r.name.clone()).collect();
 
-        for repo_name in &repo_names {
+        for (idx, repo_name) in repo_names.iter().enumerate() {
+            ctx.progress.phase(&format!("Summarizing {repo_name} ({}/{})", idx + 1, repo_names.len()));
             let per_issue_summaries = ctx
                 .per_issue_summaries
                 .get(repo_name)

@@ -16,8 +16,9 @@ pub fn upsert_issues(conn: &Connection, issues: &[IssueRow]) -> Result<usize> {
         "INSERT OR REPLACE INTO issues (
             repo, number, title, body, state, kind, labels, assignees,
             created_at, updated_at, project_status, project_start_date,
-            project_target_date, project_priority, synced_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            project_target_date, project_priority, author,
+            pr_additions, pr_deletions, synced_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
     )?;
     let now = Utc::now().to_rfc3339();
     for issue in issues {
@@ -36,6 +37,9 @@ pub fn upsert_issues(conn: &Connection, issues: &[IssueRow]) -> Result<usize> {
             issue.project_start_date,
             issue.project_target_date,
             issue.project_priority,
+            issue.author,
+            issue.pr_additions,
+            issue.pr_deletions,
             now,
         ])?;
         count += 1;
@@ -408,7 +412,8 @@ pub fn query_recent_issues(
     let sql = format!(
         "SELECT repo, number, title, body, state, kind, labels, assignees,
                 created_at, updated_at, project_status, project_start_date,
-                project_target_date, project_priority
+                project_target_date, project_priority, author,
+                pr_additions, pr_deletions
          FROM issues
          WHERE repo IN ({}) AND updated_at >= ?{}
          ORDER BY updated_at DESC",
@@ -437,6 +442,9 @@ pub fn query_recent_issues(
             project_start_date: row.get(11)?,
             project_target_date: row.get(12)?,
             project_priority: row.get(13)?,
+            author: row.get(14)?,
+            pr_additions: row.get(15)?,
+            pr_deletions: row.get(16)?,
         })
     })?;
     let mut result = Vec::new();
@@ -621,6 +629,9 @@ fn create_schema(conn: &Connection) -> Result<()> {
             project_start_date TEXT,
             project_target_date TEXT,
             project_priority TEXT,
+            author          TEXT,
+            pr_additions    INTEGER,
+            pr_deletions    INTEGER,
             synced_at       TEXT NOT NULL,
             PRIMARY KEY (repo, number)
         );

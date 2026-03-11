@@ -20,6 +20,9 @@ pub struct Issue {
     pub updated_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub repo: String,
+    pub author: Option<String>,
+    pub pr_additions: Option<i64>,
+    pub pr_deletions: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +95,9 @@ impl Issue {
                 updated_at: gh.updated_at,
                 created_at: gh.created_at,
                 repo: repo.to_string(),
+                author: None,
+                pr_additions: None,
+                pr_deletions: None,
             })
             .collect();
         Ok(issues)

@@ -64,6 +64,9 @@ fn issue_missing_required_labels() {
         updated_at: Utc::now(),
         created_at: Utc::now(),
         repo: "org/repo".into(),
+        author: None,
+        pr_additions: None,
+        pr_deletions: None,
     };
     let required = &["priority".to_string()];
     assert!(issue.missing_labels(required).contains(&"priority".to_string()));

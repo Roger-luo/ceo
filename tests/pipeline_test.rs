@@ -40,6 +40,9 @@ async fn pipeline_reads_from_database() {
         project_start_date: None,
         project_target_date: None,
         project_priority: None,
+        author: None,
+        pr_additions: None,
+        pr_deletions: None,
     }];
     db::upsert_issues(&conn, &issues).unwrap();
 
@@ -114,6 +117,9 @@ async fn pipeline_includes_contributor_stats_in_team_overview() {
         project_start_date: None,
         project_target_date: None,
         project_priority: None,
+        author: None,
+        pr_additions: None,
+        pr_deletions: None,
     }];
     db::upsert_issues(&conn, &issues).unwrap();
 

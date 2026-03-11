@@ -47,6 +47,9 @@ async fn full_pipeline_produces_valid_markdown() {
             project_start_date: None,
             project_target_date: None,
             project_priority: None,
+            author: None,
+            pr_additions: None,
+            pr_deletions: None,
         },
         db::IssueRow {
             repo: "org/frontend".to_string(),
@@ -63,6 +66,9 @@ async fn full_pipeline_produces_valid_markdown() {
             project_start_date: None,
             project_target_date: None,
             project_priority: None,
+            author: None,
+            pr_additions: None,
+            pr_deletions: None,
         },
         db::IssueRow {
             repo: "org/frontend".to_string(),
@@ -79,6 +85,9 @@ async fn full_pipeline_produces_valid_markdown() {
             project_start_date: None,
             project_target_date: None,
             project_priority: None,
+            author: None,
+            pr_additions: None,
+            pr_deletions: None,
         },
     ];
     db::upsert_issues(&conn, &issues).unwrap();

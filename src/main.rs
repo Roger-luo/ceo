@@ -368,13 +368,25 @@ fn cmd_team(days: i64) -> Result<()> {
                 }
             });
 
-        let (additions, deletions) = contributor_stats
+        let (mut additions, mut deletions) = contributor_stats
             .values()
             .flat_map(|rows| rows.iter())
             .filter(|row| row.author.eq_ignore_ascii_case(&member.github))
             .fold((0i64, 0i64), |(a, d), row| {
                 (a + row.additions, d + row.deletions)
             });
+
+        // Add lines from open (unmerged) PRs authored by this member
+        for issue in &all_issues {
+            let state = issue.state.as_deref().unwrap_or("OPEN");
+            if issue.kind == "pr"
+                && state.eq_ignore_ascii_case("OPEN")
+                && issue.author.as_deref() == Some(&member.github)
+            {
+                additions += issue.pr_additions.unwrap_or(0);
+                deletions += issue.pr_deletions.unwrap_or(0);
+            }
+        }
 
         println!(
             "| {} (@{}) | {} | {} | +{} / -{} |",

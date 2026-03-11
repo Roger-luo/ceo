@@ -34,6 +34,7 @@ struct SyncIssue {
     state: String,
     body: Option<String>,
     kind: String,
+    author: Option<String>,
 }
 
 // --- Private types for project items ---
@@ -128,6 +129,12 @@ fn fetch_issues_and_prs_rest(
                     .unwrap_or_else(|_| Utc::now())
             };
 
+            let author = item
+                .get("user")
+                .and_then(|u| u.get("login"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
             all_items.push(SyncIssue {
                 number,
                 title: title.to_string(),
@@ -138,6 +145,7 @@ fn fetch_issues_and_prs_rest(
                 state: state.to_uppercase(),
                 body,
                 kind: kind.to_string(),
+                author,
             });
         }
 
@@ -835,12 +843,40 @@ pub fn run_sync(
             }
         };
 
-        // 5. Build IssueRows, merging project data
+        // 5. Fetch additions/deletions for open PRs
+        let open_prs: Vec<u64> = items
+            .iter()
+            .filter(|i| i.kind == "pr" && i.state == "OPEN")
+            .map(|i| i.number)
+            .collect();
+        let mut pr_stats: HashMap<u64, (i64, i64)> = HashMap::new();
+        if !open_prs.is_empty() {
+            progress.phase(repo, &format!("Fetching stats for {} open PRs", open_prs.len()));
+            for &pr_num in &open_prs {
+                let endpoint = format!("repos/{repo}/pulls/{pr_num}");
+                match gh_runner.run_gh(&["api", &endpoint]) {
+                    Ok(json) => {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+                            let adds = parsed.get("additions").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let dels = parsed.get("deletions").and_then(|v| v.as_i64()).unwrap_or(0);
+                            pr_stats.insert(pr_num, (adds, dels));
+                        }
+                    }
+                    Err(e) => log::warn!("Failed to fetch PR stats for {repo}#{pr_num}: {e}"),
+                }
+            }
+        }
+
+        // 6. Build IssueRows, merging project data and PR stats
         progress.phase(repo, "Saving to database");
         let issue_rows: Vec<IssueRow> = items
             .into_iter()
             .map(|issue| {
                 let project_fields = project_map.get(&(repo.clone(), issue.number));
+                let (pr_additions, pr_deletions) = pr_stats
+                    .get(&issue.number)
+                    .map(|&(a, d)| (Some(a), Some(d)))
+                    .unwrap_or((None, None));
                 IssueRow {
                     repo: repo.clone(),
                     number: issue.number,
@@ -856,6 +892,9 @@ pub fn run_sync(
                     project_start_date: project_fields.and_then(|f| f.start_date.clone()),
                     project_target_date: project_fields.and_then(|f| f.target_date.clone()),
                     project_priority: project_fields.and_then(|f| f.priority.clone()),
+                    author: issue.author,
+                    pr_additions,
+                    pr_deletions,
                 }
             })
             .collect();

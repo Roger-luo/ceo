@@ -1,6 +1,6 @@
 /// Database schema version. Bump this when making breaking schema changes.
 /// Any mismatch between this and the stored version triggers a full DB reset.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// One row in the `issues` table. Covers both issues and pull requests.
 #[derive(Debug, Clone)]
@@ -19,6 +19,9 @@ pub struct IssueRow {
     pub project_start_date: Option<String>,
     pub project_target_date: Option<String>,
     pub project_priority: Option<String>,
+    pub author: Option<String>,
+    pub pr_additions: Option<i64>,
+    pub pr_deletions: Option<i64>,
 }
 
 /// One row in the `comments` table.

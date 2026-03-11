@@ -13,6 +13,9 @@ fn make_issue(number: u64, repo: &str, assignees: Vec<&str>, labels: Vec<&str>, 
         updated_at: Utc::now() - Duration::days(days_ago),
         created_at: Utc::now() - Duration::days(days_ago + 10),
         repo: repo.to_string(),
+        author: None,
+        pr_additions: None,
+        pr_deletions: None,
     }
 }
 

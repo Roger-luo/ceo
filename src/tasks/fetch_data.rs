@@ -26,6 +26,9 @@ fn row_to_issue(row: &IssueRow) -> Issue {
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
         repo: row.repo.clone(),
+        author: row.author.clone(),
+        pr_additions: row.pr_additions,
+        pr_deletions: row.pr_deletions,
     }
 }
 

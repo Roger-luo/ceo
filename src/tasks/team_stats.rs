@@ -46,8 +46,8 @@ impl Task for TeamStatsTask {
                         }
                     });
 
-                // Aggregate additions/deletions across all repos
-                let (additions, deletions) = ctx
+                // Aggregate additions/deletions from merged commits
+                let (mut additions, mut deletions) = ctx
                     .contributor_stats
                     .values()
                     .flat_map(|rows| rows.iter())
@@ -55,6 +55,17 @@ impl Task for TeamStatsTask {
                     .fold((0i64, 0i64), |(a, d), row| {
                         (a + row.additions, d + row.deletions)
                     });
+
+                // Add lines from open (unmerged) PRs authored by this member
+                for issue in &ctx.all_recent_issues {
+                    if issue.kind == "pr"
+                        && issue.state.eq_ignore_ascii_case("OPEN")
+                        && issue.author.as_deref() == Some(&member.github)
+                    {
+                        additions += issue.pr_additions.unwrap_or(0);
+                        deletions += issue.pr_deletions.unwrap_or(0);
+                    }
+                }
 
                 TeamStats {
                     name: member.name.clone(),

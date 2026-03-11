@@ -16,6 +16,9 @@ fn make_issue(repo: &str, number: u64, title: &str, updated_at: &str) -> IssueRo
         project_start_date: None,
         project_target_date: None,
         project_priority: None,
+        author: None,
+        pr_additions: None,
+        pr_deletions: None,
     }
 }
 

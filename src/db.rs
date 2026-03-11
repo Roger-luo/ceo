@@ -133,7 +133,8 @@ pub fn query_recent_commits(
 }
 
 /// Query contributor stats since `since` (ISO 8601 date, e.g. "2026-03-01") for the given repos.
-/// Aggregates from `commit_stats` table, returning one row per author per repo.
+/// Aggregates from `commit_stats` table, joining with `email_to_github` to resolve handles.
+/// Falls back to email prefix when no mapping exists.
 pub fn query_contributor_stats(
     conn: &Connection,
     repos: &[String],
@@ -144,11 +145,14 @@ pub fn query_contributor_stats(
     }
     let placeholders: Vec<String> = (1..=repos.len()).map(|i| format!("?{i}")).collect();
     let sql = format!(
-        "SELECT repo, author, MIN(committed_at) as week_start,
-                SUM(additions), SUM(deletions), COUNT(*) as commits
-         FROM commit_stats
-         WHERE repo IN ({}) AND committed_at >= ?{}
-         GROUP BY repo, author
+        "SELECT cs.repo,
+                COALESCE(e.github, SUBSTR(cs.author_email, 1, INSTR(cs.author_email, '@') - 1)) as author,
+                MIN(cs.committed_at) as week_start,
+                SUM(cs.additions), SUM(cs.deletions), COUNT(*) as commits
+         FROM commit_stats cs
+         LEFT JOIN email_to_github e ON cs.author_email = e.email
+         WHERE cs.repo IN ({}) AND cs.committed_at >= ?{}
+         GROUP BY cs.repo, author
          ORDER BY commits DESC",
         placeholders.join(", "),
         repos.len() + 1,
@@ -181,7 +185,7 @@ pub fn upsert_commit_stats(conn: &Connection, stats: &[CommitStatsRow]) -> Resul
     let mut count = 0;
     let mut stmt = conn.prepare(
         "INSERT OR REPLACE INTO commit_stats (
-            repo, sha, author, committed_at, additions, deletions, branch, synced_at
+            repo, sha, author_email, committed_at, additions, deletions, branch, synced_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
     let now = Utc::now().to_rfc3339();
@@ -189,7 +193,7 @@ pub fn upsert_commit_stats(conn: &Connection, stats: &[CommitStatsRow]) -> Resul
         stmt.execute(rusqlite::params![
             row.repo,
             row.sha,
-            row.author,
+            row.author_email,
             row.committed_at,
             row.additions,
             row.deletions,
@@ -212,7 +216,7 @@ pub fn query_commit_stats(
     }
     let placeholders: Vec<String> = (1..=repos.len()).map(|i| format!("?{i}")).collect();
     let sql = format!(
-        "SELECT repo, sha, author, committed_at, additions, deletions, branch
+        "SELECT repo, sha, author_email, committed_at, additions, deletions, branch
          FROM commit_stats
          WHERE repo IN ({}) AND committed_at >= ?{}
          ORDER BY committed_at DESC",
@@ -229,7 +233,7 @@ pub fn query_commit_stats(
         Ok(CommitStatsRow {
             repo: row.get(0)?,
             sha: row.get(1)?,
-            author: row.get(2)?,
+            author_email: row.get(2)?,
             committed_at: row.get(3)?,
             additions: row.get(4)?,
             deletions: row.get(5)?,
@@ -647,7 +651,7 @@ fn create_schema(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS commit_stats (
             repo         TEXT NOT NULL,
             sha          TEXT NOT NULL,
-            author       TEXT NOT NULL,
+            author_email TEXT NOT NULL,
             committed_at TEXT NOT NULL,
             additions    INTEGER NOT NULL DEFAULT 0,
             deletions    INTEGER NOT NULL DEFAULT 0,
@@ -714,7 +718,7 @@ mod tests {
         let rows = vec![CommitStatsRow {
             repo: "org/repo".into(),
             sha: "abc123".into(),
-            author: "alice".into(),
+            author_email: "alice@example.com".into(),
             committed_at: "2026-03-05".into(),
             additions: 100,
             deletions: 50,
@@ -725,7 +729,7 @@ mod tests {
 
         let result = query_commit_stats(&conn, &["org/repo".into()], "2026-03-01").unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].author, "alice");
+        assert_eq!(result[0].author_email, "alice@example.com");
         assert_eq!(result[0].additions, 100);
     }
 
@@ -734,11 +738,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db_at(&dir.path().join("test.db")).unwrap();
 
+        // Store raw emails in commit_stats
         let rows = vec![
             CommitStatsRow {
                 repo: "org/repo".into(),
                 sha: "aaa".into(),
-                author: "alice".into(),
+                author_email: "alice@example.com".into(),
                 committed_at: "2026-03-05".into(),
                 additions: 100,
                 deletions: 50,
@@ -747,7 +752,7 @@ mod tests {
             CommitStatsRow {
                 repo: "org/repo".into(),
                 sha: "bbb".into(),
-                author: "alice".into(),
+                author_email: "alice@example.com".into(),
                 committed_at: "2026-03-06".into(),
                 additions: 200,
                 deletions: 80,
@@ -756,7 +761,7 @@ mod tests {
             CommitStatsRow {
                 repo: "org/repo".into(),
                 sha: "ccc".into(),
-                author: "bob".into(),
+                author_email: "bob@example.com".into(),
                 committed_at: "2026-03-04".into(),
                 additions: 50,
                 deletions: 20,
@@ -765,6 +770,10 @@ mod tests {
         ];
         upsert_commit_stats(&conn, &rows).unwrap();
 
+        // Add email→GitHub mappings
+        upsert_email_mapping(&conn, "alice@example.com", "alice").unwrap();
+        upsert_email_mapping(&conn, "bob@example.com", "bob").unwrap();
+
         let stats = query_contributor_stats(
             &conn,
             &["org/repo".into()],
@@ -772,6 +781,7 @@ mod tests {
         ).unwrap();
 
         assert_eq!(stats.len(), 2);
+        // Resolved via email_to_github join
         let alice = stats.iter().find(|s| s.author == "alice").unwrap();
         assert_eq!(alice.additions, 300);
         assert_eq!(alice.deletions, 130);
@@ -779,6 +789,28 @@ mod tests {
         let bob = stats.iter().find(|s| s.author == "bob").unwrap();
         assert_eq!(bob.additions, 50);
         assert_eq!(bob.commits, 1);
+    }
+
+    #[test]
+    fn query_contributor_stats_falls_back_to_email_without_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db_at(&dir.path().join("test.db")).unwrap();
+
+        let rows = vec![CommitStatsRow {
+            repo: "org/repo".into(),
+            sha: "aaa".into(),
+            author_email: "unknown@example.com".into(),
+            committed_at: "2026-03-05".into(),
+            additions: 42,
+            deletions: 0,
+            branch: "main".into(),
+        }];
+        upsert_commit_stats(&conn, &rows).unwrap();
+        // No email mapping — should fall back to email prefix
+        let stats = query_contributor_stats(&conn, &["org/repo".into()], "2026-03-01").unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].author, "unknown");
+        assert_eq!(stats[0].additions, 42);
     }
 
     #[test]

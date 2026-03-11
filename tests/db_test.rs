@@ -260,12 +260,12 @@ fn query_contributor_stats_filters_by_date_and_repo() {
     let path = dir.path().join("test.db");
     let conn = db::open_db_at(&path).unwrap();
 
-    // Insert commit_stats rows (query_contributor_stats now aggregates from commit_stats)
+    // Insert commit_stats rows with raw emails
     let commit_rows = vec![
         CommitStatsRow {
             repo: "org/repo".to_string(),
             sha: "aaa".to_string(),
-            author: "alice".to_string(),
+            author_email: "alice@example.com".to_string(),
             committed_at: "2026-03-02".to_string(),
             additions: 100,
             deletions: 50,
@@ -274,7 +274,7 @@ fn query_contributor_stats_filters_by_date_and_repo() {
         CommitStatsRow {
             repo: "org/repo".to_string(),
             sha: "bbb".to_string(),
-            author: "alice".to_string(),
+            author_email: "alice@example.com".to_string(),
             committed_at: "2026-01-06".to_string(),
             additions: 30,
             deletions: 10,
@@ -283,7 +283,7 @@ fn query_contributor_stats_filters_by_date_and_repo() {
         CommitStatsRow {
             repo: "org/other".to_string(),
             sha: "ccc".to_string(),
-            author: "bob".to_string(),
+            author_email: "bob@example.com".to_string(),
             committed_at: "2026-03-02".to_string(),
             additions: 200,
             deletions: 80,
@@ -291,6 +291,7 @@ fn query_contributor_stats_filters_by_date_and_repo() {
         },
     ];
     db::upsert_commit_stats(&conn, &commit_rows).unwrap();
+    db::upsert_email_mapping(&conn, "alice@example.com", "alice").unwrap();
 
     let results = db::query_contributor_stats(
         &conn,
@@ -309,12 +310,11 @@ fn query_contributor_stats_multiple_repos() {
     let path = dir.path().join("test.db");
     let conn = db::open_db_at(&path).unwrap();
 
-    // Insert commit_stats rows (query_contributor_stats now aggregates from commit_stats)
     let commit_rows = vec![
         CommitStatsRow {
             repo: "org/repo".to_string(),
             sha: "aaa".to_string(),
-            author: "alice".to_string(),
+            author_email: "alice@example.com".to_string(),
             committed_at: "2026-03-02".to_string(),
             additions: 100,
             deletions: 50,
@@ -323,7 +323,7 @@ fn query_contributor_stats_multiple_repos() {
         CommitStatsRow {
             repo: "org/other".to_string(),
             sha: "bbb".to_string(),
-            author: "alice".to_string(),
+            author_email: "alice@example.com".to_string(),
             committed_at: "2026-03-02".to_string(),
             additions: 50,
             deletions: 20,
@@ -331,6 +331,7 @@ fn query_contributor_stats_multiple_repos() {
         },
     ];
     db::upsert_commit_stats(&conn, &commit_rows).unwrap();
+    db::upsert_email_mapping(&conn, "alice@example.com", "alice").unwrap();
 
     let results = db::query_contributor_stats(
         &conn,

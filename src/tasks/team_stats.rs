@@ -51,10 +51,7 @@ impl Task for TeamStatsTask {
                     .contributor_stats
                     .values()
                     .flat_map(|rows| rows.iter())
-                    .filter(|row| {
-                        row.author.eq_ignore_ascii_case(&member.github)
-                            || member.aliases.iter().any(|a| a.eq_ignore_ascii_case(&row.author))
-                    })
+                    .filter(|row| row.author.eq_ignore_ascii_case(&member.github))
                     .fold((0i64, 0i64), |(a, d), row| {
                         (a + row.additions, d + row.deletions)
                     });

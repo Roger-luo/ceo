@@ -330,10 +330,6 @@ pub struct TeamMember {
     pub name: String,
     #[serde(default)]
     pub role: String,
-    /// Additional git author names/emails that map to this member.
-    /// Used when the git commit author doesn't match the GitHub handle.
-    #[serde(default)]
-    pub aliases: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -555,7 +551,7 @@ impl Config {
                 let github = parts[0].to_string();
                 let name = parts.get(1).unwrap_or(&"").to_string();
                 let role = parts.get(2).unwrap_or(&"").to_string();
-                self.team.push(TeamMember { github, name, role, aliases: Vec::new() });
+                self.team.push(TeamMember { github, name, role });
             }
             "team.remove" => {
                 self.team.retain(|t| t.github != value);

@@ -1,6 +1,6 @@
 /// Database schema version. Bump this when making breaking schema changes.
 /// Any mismatch between this and the stored version triggers a full DB reset.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// One row in the `issues` table. Covers both issues and pull requests.
 #[derive(Debug, Clone)]
@@ -60,7 +60,7 @@ pub struct ContributorStatsRow {
 pub struct CommitStatsRow {
     pub repo: String,
     pub sha: String,
-    pub author: String,        // GitHub login (resolved from email)
+    pub author_email: String,  // raw git author email
     pub committed_at: String,  // ISO 8601 date
     pub additions: i64,
     pub deletions: i64,

@@ -117,13 +117,12 @@ async fn pipeline_includes_contributor_stats_in_team_overview() {
     }];
     db::upsert_issues(&conn, &issues).unwrap();
 
-    // Seed commit-level stats (query_contributor_stats aggregates from commit_stats)
-    // Use dates well within the 7-day window so they aren't filtered out by `since`.
+    // Seed commit-level stats with raw emails
     let commit_stats = vec![
         db::CommitStatsRow {
             repo: "org/frontend".to_string(),
             sha: "aaa111".to_string(),
-            author: "alice".to_string(),
+            author_email: "alice@example.com".to_string(),
             committed_at: "2026-03-07".to_string(),
             additions: 80,
             deletions: 20,
@@ -132,7 +131,7 @@ async fn pipeline_includes_contributor_stats_in_team_overview() {
         db::CommitStatsRow {
             repo: "org/frontend".to_string(),
             sha: "bbb222".to_string(),
-            author: "alice".to_string(),
+            author_email: "alice@example.com".to_string(),
             committed_at: "2026-03-08".to_string(),
             additions: 70,
             deletions: 20,
@@ -140,6 +139,8 @@ async fn pipeline_includes_contributor_stats_in_team_overview() {
         },
     ];
     db::upsert_commit_stats(&conn, &commit_stats).unwrap();
+    // Add email mapping so contributor stats resolve correctly
+    db::upsert_email_mapping(&conn, "alice@example.com", "alice").unwrap();
 
     let config: Config = toml::from_str(r#"
         [[repos]]

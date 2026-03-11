@@ -800,24 +800,17 @@ pub fn run_sync(
                             .collect();
 
                         progress.phase(repo, &format!("Resolving {} author emails", emails.len()));
-                        let email_map = resolve_emails(conn, &emails, Some(gh_runner));
+                        // Resolve emails to GitHub handles (populates email_to_github cache)
+                        let _ = resolve_emails(conn, &emails, Some(gh_runner));
 
-                        // Build CommitStatsRows
+                        // Build CommitStatsRows with raw email (resolution happens at query time)
                         let rows: Vec<db::CommitStatsRow> = stats
                             .into_iter()
                             .map(|(stat, branch)| {
-                                let author = email_map
-                                    .get(&stat.email)
-                                    .cloned()
-                                    .unwrap_or_else(|| {
-                                        stat.email.split('@').next()
-                                            .unwrap_or(&stat.author_name)
-                                            .to_string()
-                                    });
                                 db::CommitStatsRow {
                                     repo: repo.clone(),
                                     sha: stat.sha,
-                                    author,
+                                    author_email: stat.email,
                                     committed_at: stat.date.get(..10).unwrap_or(&stat.date).to_string(),
                                     additions: stat.additions,
                                     deletions: stat.deletions,

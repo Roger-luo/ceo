@@ -45,6 +45,12 @@ enum Commands {
         #[command(subcommand)]
         action: RoadmapAction,
     },
+    /// Show team overview (contributor stats from local DB, no agent calls)
+    Team {
+        /// Number of days to look back (default: 7)
+        #[arg(long, default_value = "7")]
+        days: i64,
+    },
     /// Generate an example config file (alias for `config`)
     #[command(hide = true)]
     Init,
@@ -104,6 +110,7 @@ async fn main() -> Result<()> {
         Commands::ClearCache => cmd_clear_cache(),
         Commands::Config { action } => cmd_config(action),
         Commands::Roadmap { action } => cmd_roadmap(action),
+        Commands::Team { days } => cmd_team(days),
         Commands::Init => cmd_config(None),
     }
 }
@@ -262,6 +269,69 @@ fn cmd_clear_cache() -> Result<()> {
     let conn = ceo::db::open_existing_db()?;
     ceo::db::clear_caches(&conn)?;
     eprintln!("Cleared all summary caches. Next report will regenerate everything.");
+    Ok(())
+}
+
+fn cmd_team(days: i64) -> Result<()> {
+    use chrono::{Duration, Utc};
+
+    let config = ceo::config::Config::load()?;
+    let conn = ceo::db::open_existing_db()?;
+
+    if config.team.is_empty() {
+        eprintln!("No team members configured. Use `ceo config` to add team members.");
+        return Ok(());
+    }
+
+    let now = Utc::now();
+    let start = now - Duration::days(days);
+    let since = start.format("%Y-%m-%d").to_string();
+
+    // Query contributor stats and recent issues
+    let repo_names: Vec<String> = config.repos.iter().map(|r| r.name.clone()).collect();
+    let all_issues = ceo::db::query_recent_issues(&conn, &repo_names, &start.to_rfc3339())?;
+    let mut contributor_stats = std::collections::HashMap::new();
+    for repo_config in &config.repos {
+        let stats = ceo::db::query_contributor_stats(&conn, &[repo_config.name.clone()], &since)?;
+        contributor_stats.insert(repo_config.name.clone(), stats);
+    }
+
+    println!("## Team Overview ({since} to {})\n", now.format("%Y-%m-%d"));
+    println!("| Person | Active | Closed | Lines |");
+    println!("|--------|--------|--------|-------|");
+
+    for member in &config.team {
+        let (active, closed) = all_issues
+            .iter()
+            .filter(|i| {
+                let assignees: Vec<String> = serde_json::from_str(&i.assignees).unwrap_or_default();
+                assignees.contains(&member.github)
+            })
+            .fold((0, 0), |(open, closed), i| {
+                let state = i.state.as_deref().unwrap_or("OPEN");
+                if state.eq_ignore_ascii_case("OPEN") {
+                    (open + 1, closed)
+                } else if state.eq_ignore_ascii_case("CLOSED") {
+                    (open, closed + 1)
+                } else {
+                    (open, closed)
+                }
+            });
+
+        let (additions, deletions) = contributor_stats
+            .values()
+            .flat_map(|rows| rows.iter())
+            .filter(|row| row.author.eq_ignore_ascii_case(&member.github))
+            .fold((0i64, 0i64), |(a, d), row| {
+                (a + row.additions, d + row.deletions)
+            });
+
+        println!(
+            "| {} (@{}) | {} | {} | +{} / -{} |",
+            member.name, member.github, active, closed, additions, deletions
+        );
+    }
+
     Ok(())
 }
 

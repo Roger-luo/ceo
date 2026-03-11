@@ -91,30 +91,6 @@ pub fn upsert_commits(conn: &Connection, commits: &[CommitRow]) -> Result<usize>
     Ok(count)
 }
 
-/// Bulk upsert contributor stats. Returns count of rows written.
-pub fn upsert_contributor_stats(conn: &Connection, stats: &[ContributorStatsRow]) -> Result<usize> {
-    let mut count = 0;
-    let mut stmt = conn.prepare(
-        "INSERT OR REPLACE INTO contributor_stats (
-            repo, author, week_start, additions, deletions, commits, synced_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-    )?;
-    let now = Utc::now().to_rfc3339();
-    for row in stats {
-        stmt.execute(rusqlite::params![
-            row.repo,
-            row.author,
-            row.week_start,
-            row.additions,
-            row.deletions,
-            row.commits,
-            now,
-        ])?;
-        count += 1;
-    }
-    Ok(count)
-}
-
 /// Query commits since `since` (ISO 8601 string) for the given repos.
 pub fn query_recent_commits(
     conn: &Connection,
@@ -666,17 +642,6 @@ fn create_schema(conn: &Connection) -> Result<()> {
             branch          TEXT NOT NULL DEFAULT '',
             synced_at       TEXT NOT NULL,
             PRIMARY KEY (repo, sha)
-        );
-
-        CREATE TABLE IF NOT EXISTS contributor_stats (
-            repo        TEXT NOT NULL,
-            author      TEXT NOT NULL,
-            week_start  TEXT NOT NULL,
-            additions   INTEGER NOT NULL DEFAULT 0,
-            deletions   INTEGER NOT NULL DEFAULT 0,
-            commits     INTEGER NOT NULL DEFAULT 0,
-            synced_at   TEXT NOT NULL,
-            PRIMARY KEY (repo, author, week_start)
         );
 
         CREATE TABLE IF NOT EXISTS commit_stats (

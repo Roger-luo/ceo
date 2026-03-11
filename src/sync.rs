@@ -444,9 +444,8 @@ fn resolve_emails(
                     let _ = db::upsert_email_mapping(conn, email, login);
                     map.insert(email.clone(), login.to_string());
                 } else {
-                    // No match — use email prefix as fallback
+                    // No match — use email prefix as fallback (don't cache to allow retry)
                     let fallback = email.split('@').next().unwrap_or(email).to_string();
-                    let _ = db::upsert_email_mapping(conn, email, &fallback);
                     map.insert(email.clone(), fallback);
                 }
             }
@@ -603,6 +602,7 @@ fn collect_git_stats(
                 &format!("--since={since}"),
                 branch,
             ])
+            .env("LC_ALL", "C")
             .current_dir(repo_path)
             .output()
             .map_err(|e| {

@@ -45,6 +45,8 @@ enum Commands {
         #[command(subcommand)]
         action: RoadmapAction,
     },
+    /// Show GitHub API rate limit status
+    RateLimit,
     /// Show team overview (contributor stats from local DB, no agent calls)
     Team {
         /// Number of days to look back (default: 7)
@@ -110,6 +112,7 @@ async fn main() -> Result<()> {
         Commands::ClearCache => cmd_clear_cache(),
         Commands::Config { action } => cmd_config(action),
         Commands::Roadmap { action } => cmd_roadmap(action),
+        Commands::RateLimit => cmd_rate_limit(),
         Commands::Team { days } => cmd_team(days),
         Commands::Init => cmd_config(None),
     }
@@ -269,6 +272,53 @@ fn cmd_clear_cache() -> Result<()> {
     let conn = ceo::db::open_existing_db()?;
     ceo::db::clear_caches(&conn)?;
     eprintln!("Cleared all summary caches. Next report will regenerate everything.");
+    Ok(())
+}
+
+fn cmd_rate_limit() -> Result<()> {
+    let gh = ceo::gh::RealGhRunner;
+    let json = ceo::gh::GhRunner::run_gh(&gh, &["api", "rate_limit"])
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let parsed: serde_json::Value = serde_json::from_str(&json)?;
+
+    let resources = &parsed["resources"];
+    let now = chrono::Utc::now().timestamp();
+
+    for (name, display) in [("core", "Core API"), ("search", "Search API"), ("graphql", "GraphQL")] {
+        let r = &resources[name];
+        let remaining = r["remaining"].as_i64().unwrap_or(0);
+        let limit = r["limit"].as_i64().unwrap_or(0);
+        let reset = r["reset"].as_i64().unwrap_or(0);
+        let wait = (reset - now).max(0);
+
+        let reset_str = if wait > 0 {
+            format!(" (resets in {}m {}s)", wait / 60, wait % 60)
+        } else {
+            String::new()
+        };
+        let status = if remaining == 0 {
+            format!("EXHAUSTED{reset_str}")
+        } else {
+            format!("{remaining}/{limit} remaining{reset_str}")
+        };
+        println!("  {display}: {status}");
+    }
+
+    // Show email resolution cache stats
+    if let Ok(conn) = ceo::db::open_existing_db() {
+        let cached: i64 = conn
+            .query_row("SELECT COUNT(*) FROM email_to_github", [], |row| row.get(0))
+            .unwrap_or(0);
+        let unresolved: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT author) FROM commit_stats WHERE author NOT IN (SELECT github FROM email_to_github)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        println!("\n  Email cache: {cached} resolved, {unresolved} pending");
+    }
+
     Ok(())
 }
 

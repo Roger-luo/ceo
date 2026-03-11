@@ -426,7 +426,11 @@ fn resolve_emails(
         return map;
     };
 
-    for email in &uncached {
+    for (idx, email) in uncached.iter().enumerate() {
+        // GitHub search API rate limit: 30 req/min. Throttle to stay under.
+        if idx > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
         let endpoint = format!("search/users?q={}+in:email", email);
         match gh.run_gh(&["api", &endpoint]) {
             Ok(json) => {

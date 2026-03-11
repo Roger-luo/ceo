@@ -427,11 +427,31 @@ fn resolve_emails(
     };
 
     for (idx, email) in uncached.iter().enumerate() {
+        // GitHub noreply emails: extract handle directly (e.g. "12345678+jdoe@users.noreply.github.com")
+        if email.ends_with("@users.noreply.github.com") {
+            let prefix = email.split('@').next().unwrap_or(email);
+            // Strip numeric ID prefix: "12345678+jdoe" -> "jdoe"
+            let handle = prefix.rsplit('+').next().unwrap_or(prefix);
+            // Strip "[bot]" suffix for bot accounts
+            let handle = handle.strip_suffix("[bot]")
+                .map(|h| format!("{h}[bot]"))
+                .unwrap_or_else(|| handle.to_string());
+            let _ = db::upsert_email_mapping(conn, email, &handle);
+            map.insert(email.clone(), handle);
+            continue;
+        }
+
         // GitHub search API rate limit: 30 req/min. Throttle to stay under.
         if idx > 0 {
             std::thread::sleep(std::time::Duration::from_secs(2));
         }
-        let endpoint = format!("search/users?q={}+in:email", email);
+        // URL-encode the email to handle special chars like '+'
+        let encoded_email: String = email.chars().map(|c| match c {
+            '+' => "%2B".to_string(),
+            '@' => "%40".to_string(),
+            _ => c.to_string(),
+        }).collect();
+        let endpoint = format!("search/users?q={}+in:email", encoded_email);
         match gh.run_gh(&["api", &endpoint]) {
             Ok(json) => {
                 let parsed: serde_json::Value = match serde_json::from_str(&json) {
@@ -923,6 +943,32 @@ Bob Jones
         let emails = vec!["alice@example.com".to_string()];
         let map = resolve_emails(&conn, &emails, None);
         assert_eq!(map.get("alice@example.com"), Some(&"alice".to_string()));
+    }
+
+    #[test]
+    fn resolve_emails_handles_noreply() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_db_at(&dir.path().join("test.db")).unwrap();
+
+        let emails = vec![
+            "12345678+jdoe@users.noreply.github.com".to_string(),
+            "someuser@users.noreply.github.com".to_string(),
+        ];
+        // gh_runner=None means no API calls — noreply should still resolve
+        // We need a mock gh_runner since the function returns early without one
+        struct NoOpGh;
+        impl GhRunner for NoOpGh {
+            fn run_gh(&self, _args: &[&str]) -> std::result::Result<String, GhError> {
+                panic!("should not call API for noreply emails");
+            }
+        }
+        let map = resolve_emails(&conn, &emails, Some(&NoOpGh));
+        assert_eq!(map.get("12345678+jdoe@users.noreply.github.com"), Some(&"jdoe".to_string()));
+        assert_eq!(map.get("someuser@users.noreply.github.com"), Some(&"someuser".to_string()));
+
+        // Verify it was cached in DB
+        let cached = db::query_email_mapping(&conn, "12345678+jdoe@users.noreply.github.com").unwrap();
+        assert_eq!(cached, Some("jdoe".to_string()));
     }
 
     #[test]

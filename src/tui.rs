@@ -472,7 +472,7 @@ impl ConfigEditor {
                     let github = item.primary.trim_start_matches('@').to_string();
                     let name = item.details.first().map(|(_, v)| v.clone()).unwrap_or_default();
                     let role = item.details.get(1).map(|(_, v)| v.clone()).unwrap_or_default();
-                    TeamMember { github, name, role }
+                    TeamMember { github, name, role, aliases: Vec::new() }
                 })
                 .collect();
         }

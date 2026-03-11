@@ -397,99 +397,6 @@ fn fetch_commits_for_sync(
     Ok(all_commits)
 }
 
-/// Fetch contributor stats (weekly additions/deletions/commits per author)
-/// via the GitHub REST API. Returns one row per author per week.
-/// The API returns 202 while computing stats on first request; retries once after a delay.
-fn fetch_contributor_stats(
-    gh_runner: &dyn GhRunner,
-    repo: &str,
-) -> std::result::Result<Vec<db::ContributorStatsRow>, GhError> {
-    let endpoint = format!("repos/{repo}/stats/contributors");
-
-    // GitHub returns 202 with {} on first request while computing.
-    // Retry once after a short delay to get the actual data.
-    let parsed = {
-        let mut result = None;
-        for attempt in 0..2 {
-            let json = gh_runner.run_gh(&["api", &endpoint])?;
-            if json.trim().is_empty() {
-                if attempt == 0 {
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-                    continue;
-                }
-                return Ok(Vec::new());
-            }
-            let value: serde_json::Value = serde_json::from_str(&json)?;
-            match value {
-                serde_json::Value::Array(arr) => {
-                    result = Some(arr);
-                    break;
-                }
-                _ => {
-                    if attempt == 0 {
-                        std::thread::sleep(std::time::Duration::from_secs(3));
-                        continue;
-                    }
-                    return Ok(Vec::new());
-                }
-            }
-        }
-        match result {
-            Some(arr) => arr,
-            None => return Ok(Vec::new()),
-        }
-    };
-    let mut rows = Vec::new();
-
-    for contributor in parsed {
-        let author = match contributor
-            .get("author")
-            .and_then(|a| a.get("login"))
-            .and_then(|v| v.as_str())
-        {
-            Some(login) => login,
-            None => continue, // skip deleted accounts / bots with null author
-        };
-
-        let weeks = match contributor.get("weeks").and_then(|w| w.as_array()) {
-            Some(w) => w,
-            None => continue,
-        };
-
-        for week in weeks {
-            let timestamp = week.get("w").and_then(|v| v.as_i64()).unwrap_or(0);
-            let additions = week.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
-            let deletions = week.get("d").and_then(|v| v.as_i64()).unwrap_or(0);
-            let commits = week.get("c").and_then(|v| v.as_i64()).unwrap_or(0);
-
-            // Skip weeks with zero activity
-            if additions == 0 && deletions == 0 && commits == 0 {
-                continue;
-            }
-
-            // Convert Unix timestamp to ISO 8601 date
-            let week_start = chrono::DateTime::from_timestamp(timestamp, 0)
-                .map(|dt| dt.format("%Y-%m-%d").to_string())
-                .unwrap_or_default();
-
-            if week_start.is_empty() {
-                continue;
-            }
-
-            rows.push(db::ContributorStatsRow {
-                repo: repo.to_string(),
-                author: author.to_string(),
-                week_start,
-                additions,
-                deletions,
-                commits,
-            });
-        }
-    }
-
-    Ok(rows)
-}
-
 // --- Email → GitHub handle resolution ---
 
 /// Resolve a set of git author emails to GitHub handles.
@@ -845,16 +752,69 @@ pub fn run_sync(
             }
         };
 
-        // 4. Fetch contributor stats (weekly additions/deletions per author)
-        progress.phase(repo, "Fetching contributor stats");
-        let contributor_stats = match fetch_contributor_stats(gh_runner, repo) {
-            Ok(stats) => {
-                log::info!("Fetched {} contributor stat entries for {repo}", stats.len());
-                stats
+        // 4. Collect contributor stats via local git clone
+        progress.phase(repo, "Cloning/fetching git repo");
+        let commit_stats_rows = match clone_or_fetch_repo(repo) {
+            Ok(repo_path) => {
+                let since_30d = (Utc::now() - chrono::Duration::days(30))
+                    .format("%Y-%m-%d")
+                    .to_string();
+                progress.phase(repo, "Collecting git stats");
+                match collect_git_stats(
+                    &repo_path,
+                    repo,
+                    &repo_config.branches,
+                    &since_30d,
+                ) {
+                    Ok(stats) => {
+                        // Gather unique emails for resolution
+                        let emails: Vec<String> = stats
+                            .iter()
+                            .map(|(s, _)| s.email.clone())
+                            .collect::<std::collections::HashSet<_>>()
+                            .into_iter()
+                            .collect();
+
+                        progress.phase(repo, &format!("Resolving {} author emails", emails.len()));
+                        let email_map = resolve_emails(conn, &emails, Some(gh_runner));
+
+                        // Build CommitStatsRows
+                        let rows: Vec<db::CommitStatsRow> = stats
+                            .into_iter()
+                            .map(|(stat, branch)| {
+                                let author = email_map
+                                    .get(&stat.email)
+                                    .cloned()
+                                    .unwrap_or_else(|| {
+                                        stat.email.split('@').next()
+                                            .unwrap_or(&stat.author_name)
+                                            .to_string()
+                                    });
+                                db::CommitStatsRow {
+                                    repo: repo.clone(),
+                                    sha: stat.sha,
+                                    author,
+                                    committed_at: stat.date.get(..10).unwrap_or(&stat.date).to_string(),
+                                    additions: stat.additions,
+                                    deletions: stat.deletions,
+                                    branch,
+                                }
+                            })
+                            .collect();
+
+                        log::info!("Collected {} commit stats for {repo}", rows.len());
+                        rows
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to collect git stats for {repo}: {e}");
+                        progress.warn(&format!("Failed to collect git stats for {repo}: {e}"));
+                        Vec::new()
+                    }
+                }
             }
             Err(e) => {
-                log::warn!("Failed to fetch contributor stats for {repo}: {e}");
-                progress.warn(&format!("Failed to fetch contributor stats for {repo}: {e}"));
+                log::warn!("Failed to clone/fetch {repo}: {e}");
+                progress.warn(&format!("Failed to clone/fetch {repo}: {e}"));
                 Vec::new()
             }
         };
@@ -895,7 +855,7 @@ pub fn run_sync(
             db::upsert_issues(&tx, &issue_rows)?;
             db::upsert_comments(&tx, &all_comments)?;
             db::upsert_commits(&tx, &commit_rows)?;
-            db::upsert_contributor_stats(&tx, &contributor_stats)?;
+            db::upsert_commit_stats(&tx, &commit_stats_rows)?;
             db::log_sync(&tx, repo, issues_count, comments_count)?;
             tx.commit().map_err(crate::error::DbError::from)?;
         }

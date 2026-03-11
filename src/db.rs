@@ -157,6 +157,7 @@ pub fn query_recent_commits(
 }
 
 /// Query contributor stats since `since` (ISO 8601 date, e.g. "2026-03-01") for the given repos.
+/// Aggregates from `commit_stats` table, returning one row per author per repo.
 pub fn query_contributor_stats(
     conn: &Connection,
     repos: &[String],
@@ -167,10 +168,12 @@ pub fn query_contributor_stats(
     }
     let placeholders: Vec<String> = (1..=repos.len()).map(|i| format!("?{i}")).collect();
     let sql = format!(
-        "SELECT repo, author, week_start, additions, deletions, commits
-         FROM contributor_stats
-         WHERE repo IN ({}) AND week_start >= ?{}
-         ORDER BY week_start DESC",
+        "SELECT repo, author, MIN(committed_at) as week_start,
+                SUM(additions), SUM(deletions), COUNT(*) as commits
+         FROM commit_stats
+         WHERE repo IN ({}) AND committed_at >= ?{}
+         GROUP BY repo, author
+         ORDER BY commits DESC",
         placeholders.join(", "),
         repos.len() + 1,
     );
@@ -759,6 +762,58 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].author, "alice");
         assert_eq!(result[0].additions, 100);
+    }
+
+    #[test]
+    fn query_contributor_stats_aggregates_from_commit_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db_at(&dir.path().join("test.db")).unwrap();
+
+        let rows = vec![
+            CommitStatsRow {
+                repo: "org/repo".into(),
+                sha: "aaa".into(),
+                author: "alice".into(),
+                committed_at: "2026-03-05".into(),
+                additions: 100,
+                deletions: 50,
+                branch: "main".into(),
+            },
+            CommitStatsRow {
+                repo: "org/repo".into(),
+                sha: "bbb".into(),
+                author: "alice".into(),
+                committed_at: "2026-03-06".into(),
+                additions: 200,
+                deletions: 80,
+                branch: "feature".into(),
+            },
+            CommitStatsRow {
+                repo: "org/repo".into(),
+                sha: "ccc".into(),
+                author: "bob".into(),
+                committed_at: "2026-03-04".into(),
+                additions: 50,
+                deletions: 20,
+                branch: "main".into(),
+            },
+        ];
+        upsert_commit_stats(&conn, &rows).unwrap();
+
+        let stats = query_contributor_stats(
+            &conn,
+            &["org/repo".into()],
+            "2026-03-01",
+        ).unwrap();
+
+        assert_eq!(stats.len(), 2);
+        let alice = stats.iter().find(|s| s.author == "alice").unwrap();
+        assert_eq!(alice.additions, 300);
+        assert_eq!(alice.deletions, 130);
+        assert_eq!(alice.commits, 2);
+        let bob = stats.iter().find(|s| s.author == "bob").unwrap();
+        assert_eq!(bob.additions, 50);
+        assert_eq!(bob.commits, 1);
     }
 
     #[test]

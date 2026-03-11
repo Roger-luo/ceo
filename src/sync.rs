@@ -531,7 +531,6 @@ fn clone_or_fetch_repo(repo: &str) -> std::result::Result<PathBuf, SyncError> {
 struct GitCommitStat {
     sha: String,
     email: String,
-    author_name: String,
     date: String,
     additions: i64,
     deletions: i64,
@@ -554,7 +553,7 @@ fn parse_git_log_output(output: &str) -> Vec<GitCommitStat> {
 
         let sha = lines[i].trim().to_string();
         let email = lines[i + 1].trim().to_string();
-        let author_name = lines[i + 2].trim().to_string();
+        let _author_name = lines[i + 2].trim();
         let date = lines[i + 3].trim().to_string();
         i += 4;
 
@@ -591,7 +590,6 @@ fn parse_git_log_output(output: &str) -> Vec<GitCommitStat> {
             results.push(GitCommitStat {
                 sha,
                 email,
-                author_name,
                 date,
                 additions,
                 deletions,
@@ -608,10 +606,11 @@ fn collect_git_stats(
     branches: &[String],
     since: &str,
 ) -> std::result::Result<Vec<(GitCommitStat, String)>, SyncError> {
+    // In bare clones, branches are stored directly (not as origin/*).
     let branches_to_scan: Vec<String> = if branches.is_empty() {
         vec!["HEAD".to_string()]
     } else {
-        branches.iter().map(|b| format!("origin/{b}")).collect()
+        branches.to_vec()
     };
 
     let mut seen_shas = std::collections::HashSet::new();
@@ -644,7 +643,7 @@ fn collect_git_stats(
         let stdout = String::from_utf8_lossy(&output.stdout);
         let parsed = parse_git_log_output(&stdout);
 
-        let branch_label = branch.strip_prefix("origin/").unwrap_or(branch).to_string();
+        let branch_label = branch.clone();
         for stat in parsed {
             if seen_shas.insert(stat.sha.clone()) {
                 all_stats.push((stat, branch_label.clone()));

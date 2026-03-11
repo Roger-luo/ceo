@@ -66,6 +66,8 @@ pub enum SyncError {
     Db(#[from] DbError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error("Git error: {0}")]
+    Git(String),
 }
 
 #[derive(Debug, thiserror::Error)]

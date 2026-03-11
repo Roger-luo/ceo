@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Command;
 
 use chrono::{DateTime, Utc};
 
@@ -488,6 +490,176 @@ fn fetch_contributor_stats(
     Ok(rows)
 }
 
+// --- Git clone/fetch and local git log ---
+
+/// Returns the directory for bare git clones: ~/.local/share/ceo/repos/
+fn repos_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("ceo")
+        .join("repos")
+}
+
+/// Clone a repo as a bare repository (first time) or fetch updates.
+/// Returns the path to the bare repo directory.
+fn clone_or_fetch_repo(repo: &str) -> std::result::Result<PathBuf, SyncError> {
+    let repo_path = repos_dir().join(format!("{}.git", repo));
+
+    if repo_path.exists() {
+        let output = Command::new("git")
+            .args(["fetch", "--prune"])
+            .current_dir(&repo_path)
+            .output()
+            .map_err(|e| SyncError::Git(format!("git fetch failed for {repo}: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(SyncError::Git(format!("git fetch failed for {repo}: {stderr}")));
+        }
+    } else {
+        if let Some(parent) = repo_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| SyncError::Git(format!("failed to create dir for {repo}: {e}")))?;
+        }
+        let url = format!("https://github.com/{repo}.git");
+        let output = Command::new("git")
+            .args(["clone", "--bare", &url, &repo_path.to_string_lossy()])
+            .output()
+            .map_err(|e| SyncError::Git(format!("git clone failed for {repo}: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(SyncError::Git(format!("git clone failed for {repo}: {stderr}")));
+        }
+    }
+
+    Ok(repo_path)
+}
+
+struct GitCommitStat {
+    sha: String,
+    email: String,
+    author_name: String,
+    date: String,
+    additions: i64,
+    deletions: i64,
+}
+
+fn parse_git_log_output(output: &str) -> Vec<GitCommitStat> {
+    let mut results = Vec::new();
+    let lines: Vec<&str> = output.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        if lines[i].trim().is_empty() {
+            i += 1;
+            continue;
+        }
+
+        if i + 3 >= lines.len() {
+            break;
+        }
+
+        let sha = lines[i].trim().to_string();
+        let email = lines[i + 1].trim().to_string();
+        let author_name = lines[i + 2].trim().to_string();
+        let date = lines[i + 3].trim().to_string();
+        i += 4;
+
+        while i < lines.len() && lines[i].trim().is_empty() {
+            i += 1;
+        }
+
+        let mut additions = 0i64;
+        let mut deletions = 0i64;
+        if i < lines.len() {
+            let stat_line = lines[i].trim();
+            if stat_line.contains("changed") {
+                for part in stat_line.split(", ") {
+                    let part = part.trim();
+                    if part.contains("insertion") {
+                        additions = part
+                            .split_whitespace()
+                            .next()
+                            .and_then(|n| n.parse().ok())
+                            .unwrap_or(0);
+                    } else if part.contains("deletion") {
+                        deletions = part
+                            .split_whitespace()
+                            .next()
+                            .and_then(|n| n.parse().ok())
+                            .unwrap_or(0);
+                    }
+                }
+                i += 1;
+            }
+        }
+
+        if sha.len() >= 40 {
+            results.push(GitCommitStat {
+                sha,
+                email,
+                author_name,
+                date,
+                additions,
+                deletions,
+            });
+        }
+    }
+
+    results
+}
+
+fn collect_git_stats(
+    repo_path: &std::path::Path,
+    repo_name: &str,
+    branches: &[String],
+    since: &str,
+) -> std::result::Result<Vec<(GitCommitStat, String)>, SyncError> {
+    let branches_to_scan: Vec<String> = if branches.is_empty() {
+        vec!["HEAD".to_string()]
+    } else {
+        branches.iter().map(|b| format!("origin/{b}")).collect()
+    };
+
+    let mut seen_shas = std::collections::HashSet::new();
+    let mut all_stats = Vec::new();
+
+    for branch in &branches_to_scan {
+        let output = Command::new("git")
+            .args([
+                "log",
+                "--format=%H%n%ae%n%an%n%aI",
+                "--shortstat",
+                &format!("--since={since}"),
+                branch,
+            ])
+            .current_dir(repo_path)
+            .output()
+            .map_err(|e| {
+                SyncError::Git(format!(
+                    "git log failed for {repo_name} branch {branch}: {e}"
+                ))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::warn!("git log failed for {repo_name} branch {branch}: {stderr}");
+            continue;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parsed = parse_git_log_output(&stdout);
+
+        let branch_label = branch.strip_prefix("origin/").unwrap_or(branch).to_string();
+        for stat in parsed {
+            if seen_shas.insert(stat.sha.clone()) {
+                all_stats.push((stat, branch_label.clone()));
+            }
+        }
+    }
+
+    Ok(all_stats)
+}
+
 // --- Progress reporting ---
 
 /// Callback trait for sync progress. All methods have default no-ops so tests
@@ -679,4 +851,51 @@ pub fn run_sync(
     Ok(SyncResult {
         repos: repo_results,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_git_log_output_works() {
+        let output = "\
+abc1234567890abcdef1234567890abcdef123456
+alice@example.com
+Alice Smith
+2026-03-05T10:00:00+00:00
+
+ 3 files changed, 100 insertions(+), 50 deletions(-)
+
+def1234567890abcdef1234567890abcdef654321
+bob@example.com
+Bob Jones
+2026-03-04T10:00:00+00:00
+
+ 1 file changed, 10 insertions(+)
+";
+        let stats = parse_git_log_output(output);
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].email, "alice@example.com");
+        assert_eq!(stats[0].additions, 100);
+        assert_eq!(stats[0].deletions, 50);
+        assert_eq!(stats[1].email, "bob@example.com");
+        assert_eq!(stats[1].additions, 10);
+        assert_eq!(stats[1].deletions, 0);
+    }
+
+    #[test]
+    fn parse_git_log_handles_merge_commits_no_stats() {
+        let output = "\
+abc1234567890abcdef1234567890abcdef123456
+alice@example.com
+Alice Smith
+2026-03-05T10:00:00+00:00
+
+";
+        let stats = parse_git_log_output(output);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].additions, 0);
+        assert_eq!(stats[0].deletions, 0);
+    }
 }

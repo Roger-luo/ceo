@@ -490,6 +490,70 @@ fn fetch_contributor_stats(
     Ok(rows)
 }
 
+// --- Email → GitHub handle resolution ---
+
+/// Resolve a set of git author emails to GitHub handles.
+/// Checks DB cache first, then calls `gh api /search/users?q={email}+in:email`
+/// for uncached emails. Results are cached for future syncs.
+/// `gh_runner` is optional — if None, only cached lookups are used (useful for tests).
+fn resolve_emails(
+    conn: &rusqlite::Connection,
+    emails: &[String],
+    gh_runner: Option<&dyn GhRunner>,
+) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let mut uncached = Vec::new();
+
+    for email in emails {
+        match db::query_email_mapping(conn, email) {
+            Ok(Some(github)) => {
+                map.insert(email.clone(), github);
+            }
+            _ => {
+                uncached.push(email.clone());
+            }
+        }
+    }
+
+    let Some(gh) = gh_runner else {
+        return map;
+    };
+
+    for email in &uncached {
+        let endpoint = format!("search/users?q={}+in:email", email);
+        match gh.run_gh(&["api", &endpoint]) {
+            Ok(json) => {
+                let parsed: serde_json::Value = match serde_json::from_str(&json) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if let Some(login) = parsed
+                    .get("items")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|u| u.get("login"))
+                    .and_then(|v| v.as_str())
+                {
+                    let _ = db::upsert_email_mapping(conn, email, login);
+                    map.insert(email.clone(), login.to_string());
+                } else {
+                    // No match — use email prefix as fallback
+                    let fallback = email.split('@').next().unwrap_or(email).to_string();
+                    let _ = db::upsert_email_mapping(conn, email, &fallback);
+                    map.insert(email.clone(), fallback);
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to resolve email {email}: {e}");
+                let fallback = email.split('@').next().unwrap_or(email).to_string();
+                map.insert(email.clone(), fallback);
+            }
+        }
+    }
+
+    map
+}
+
 // --- Git clone/fetch and local git log ---
 
 /// Returns the directory for bare git clones: ~/.local/share/ceo/repos/
@@ -882,6 +946,19 @@ Bob Jones
         assert_eq!(stats[1].email, "bob@example.com");
         assert_eq!(stats[1].additions, 10);
         assert_eq!(stats[1].deletions, 0);
+    }
+
+    #[test]
+    fn resolve_emails_uses_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_db_at(&dir.path().join("test.db")).unwrap();
+
+        // Pre-populate cache
+        db::upsert_email_mapping(&conn, "alice@example.com", "alice").unwrap();
+
+        let emails = vec!["alice@example.com".to_string()];
+        let map = resolve_emails(&conn, &emails, None);
+        assert_eq!(map.get("alice@example.com"), Some(&"alice".to_string()));
     }
 
     #[test]

@@ -2,15 +2,17 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
+use std::sync::Arc;
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use log::debug;
+use tokio::sync::Semaphore;
 
 use crate::db::{self, CommentRow};
+use crate::error::PipelineError;
 use crate::github::Issue;
-use crate::prompt::{
-    BatchIssueDescriptionPrompt, BatchIssueEntry, DiscussionSummaryPrompt, IssueDescriptionPrompt,
-};
-use crate::report::{extract_all_summary_tags, github_link};
+use crate::prompt::{DiscussionSummaryPrompt, IssueDescriptionPrompt};
+use crate::report::github_link;
 
 use super::{PipelineContext, Result, Task};
 
@@ -54,8 +56,6 @@ impl Task for SummarizeIssuesTask {
     fn run<'a, 'ctx>(&'a self, ctx: &'a mut PipelineContext<'ctx>) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>
     where 'ctx: 'a {
         Box::pin(async move {
-        let batch_size = ctx.config.batch_size();
-
         for repo_config in &ctx.config.repos {
             let repo_name = &repo_config.name;
             let issues = match ctx.issues.get(repo_name) {
@@ -145,157 +145,112 @@ impl Task for SummarizeIssuesTask {
                 discussion_summaries.insert(issue.number, cache.discussion_summary.clone());
             }
 
-            // 2. Discussion changed: keep cached issue_summary, update discussion
+            // 2 + 3. Concurrent processing of discussion_changed and needs_description
+            let concurrency = ctx.config.concurrency();
+            let agent = ctx.agent;
+            let uncached_count = discussion_changed.len() + needs_description.len();
+
+            if uncached_count > 0 {
+                let effective = concurrency.min(uncached_count);
+                ctx.progress.repo_start(repo_name, uncached_count);
+                ctx.progress.phase(&format!(
+                    "{repo_name}: {uncached_count} to summarize ({effective}x concurrent)"
+                ));
+            }
+
+            type AgentResult = std::result::Result<(u64, String, String, String), PipelineError>;
+            type AgentFut<'f> = Pin<Box<dyn Future<Output = AgentResult> + 'f>>;
+
+            let semaphore = Arc::new(Semaphore::new(concurrency));
+            let mut futs: FuturesUnordered<AgentFut<'_>> = FuturesUnordered::new();
+
+            // Push futures for discussion_changed issues
             for issue in &discussion_changed {
                 let data = &issue_data[&issue.number];
                 let cache = data.cached.as_ref().unwrap();
-                issue_summaries.insert(issue.number, cache.issue_summary.clone());
-
+                let sem = semaphore.clone();
+                let number = issue.number;
+                let title = issue.title.clone();
+                let repo_name_owned = repo_name.to_string();
                 let disc_prompt = DiscussionSummaryPrompt {
-                    repo: repo_name.to_string(),
-                    number: issue.number,
-                    title: issue.title.clone(),
+                    repo: repo_name_owned,
+                    number,
+                    title: title.clone(),
                     comments: data.comments_text.clone(),
                     previous_summary: Some(cache.discussion_summary.clone()),
                     summary_length: ctx.summary_length.clone(),
                 };
-                let new_disc = ctx.agent.invoke(&disc_prompt).await.map_err(|e| {
-                    eprintln!("  Error updating discussion #{}: {e}", issue.number);
-                    e
-                })?;
-                let _ = db::save_issue_cache(
-                    ctx.conn,
-                    repo_name,
-                    issue.number,
-                    &cache.issue_summary,
-                    &new_disc,
-                    &data.discussion_hash,
-                );
-                discussion_summaries.insert(issue.number, new_disc);
+                let issue_sum = cache.issue_summary.clone();
+                let disc_hash = data.discussion_hash.clone();
+
+                futs.push(Box::pin(async move {
+                    let _permit = sem.acquire().await.unwrap();
+                    let new_disc = agent.invoke(&disc_prompt).await?;
+                    Ok((number, issue_sum, new_disc, disc_hash))
+                }));
             }
 
-            // 3. Uncached: batch description prompts, then individual discussion prompts
-            // Batch the description calls
-            for chunk in needs_description.chunks(batch_size) {
-                let desc_results: HashMap<u64, String> = if chunk.len() == 1 {
-                    // Single issue: use individual prompt
-                    let issue = chunk[0];
-                    let data = &issue_data[&issue.number];
-                    let linked_assignees: Vec<String> =
-                        issue.assignees.iter().map(|a| github_link(a)).collect();
-                    let desc_prompt = IssueDescriptionPrompt {
-                        repo: repo_name.to_string(),
-                        number: issue.number,
-                        title: issue.title.clone(),
-                        kind: issue.kind.clone(),
-                        labels: issue.labels.join(", "),
-                        assignees: linked_assignees.join(", "),
-                        body: data.body.clone(),
-                        summary_length: ctx.summary_length.clone(),
-                    };
-                    let issue_sum = ctx.agent.invoke(&desc_prompt).await.map_err(|e| {
-                        eprintln!("  Error summarizing #{}: {e}", issue.number);
-                        e
-                    })?;
-                    let mut m = HashMap::new();
-                    m.insert(issue.number, issue_sum);
-                    m
-                } else {
-                    // Multiple issues: use batch prompt
-                    let entries: Vec<BatchIssueEntry> = chunk
-                        .iter()
-                        .map(|issue| {
-                            let data = &issue_data[&issue.number];
-                            let linked_assignees: Vec<String> =
-                                issue.assignees.iter().map(|a| github_link(a)).collect();
-                            BatchIssueEntry {
-                                repo: repo_name.to_string(),
-                                number: issue.number,
-                                title: issue.title.clone(),
-                                kind: issue.kind.clone(),
-                                labels: issue.labels.join(", "),
-                                assignees: linked_assignees.join(", "),
-                                body: data.body.clone(),
-                            }
-                        })
-                        .collect();
-
-                    let batch_prompt = BatchIssueDescriptionPrompt {
-                        issues: entries,
-                        summary_length: ctx.summary_length.clone(),
-                    };
-                    let response = ctx.agent.invoke(&batch_prompt).await.map_err(|e| {
-                        eprintln!("  Error in batch summarize: {e}");
-                        e
-                    })?;
-
-                    let parsed: HashMap<u64, String> =
-                        extract_all_summary_tags(&response).into_iter().collect();
-
-                    // Fall back to individual prompts for any missing issues
-                    let mut results = parsed;
-                    for issue in chunk.iter() {
-                        if !results.contains_key(&issue.number) {
-                            debug!(
-                                "Issue #{}: missing from batch response, falling back to individual",
-                                issue.number
-                            );
-                            let data = &issue_data[&issue.number];
-                            let linked_assignees: Vec<String> =
-                                issue.assignees.iter().map(|a| github_link(a)).collect();
-                            let desc_prompt = IssueDescriptionPrompt {
-                                repo: repo_name.to_string(),
-                                number: issue.number,
-                                title: issue.title.clone(),
-                                kind: issue.kind.clone(),
-                                labels: issue.labels.join(", "),
-                                assignees: linked_assignees.join(", "),
-                                body: data.body.clone(),
-                                summary_length: ctx.summary_length.clone(),
-                            };
-                            let issue_sum = ctx.agent.invoke(&desc_prompt).await.map_err(|e| {
-                                eprintln!("  Error summarizing #{}: {e}", issue.number);
-                                e
-                            })?;
-                            results.insert(issue.number, issue_sum);
-                        }
-                    }
-                    results
+            // Push futures for needs_description issues
+            for issue in &needs_description {
+                let data = &issue_data[&issue.number];
+                let sem = semaphore.clone();
+                let number = issue.number;
+                let title = issue.title.clone();
+                let repo_name_owned = repo_name.to_string();
+                let linked_assignees: Vec<String> = issue.assignees.iter().map(|a| github_link(a)).collect();
+                let desc_prompt = IssueDescriptionPrompt {
+                    repo: repo_name_owned.clone(),
+                    number,
+                    title: title.clone(),
+                    kind: issue.kind.clone(),
+                    labels: issue.labels.join(", "),
+                    assignees: linked_assignees.join(", "),
+                    body: data.body.clone(),
+                    summary_length: ctx.summary_length.clone(),
                 };
+                let comments_text = data.comments_text.clone();
+                let disc_hash = data.discussion_hash.clone();
+                let summary_length = ctx.summary_length.clone();
 
-                // Now handle discussion summaries and caching for each issue in the chunk
-                for issue in chunk.iter() {
-                    let data = &issue_data[&issue.number];
-                    let issue_sum = desc_results[&issue.number].clone();
+                futs.push(Box::pin(async move {
+                    let _permit = sem.acquire().await.unwrap();
+                    let issue_sum = agent.invoke(&desc_prompt).await?;
 
-                    let discussion_sum = if data.comments_text.is_empty() {
+                    let discussion_sum = if comments_text.is_empty() {
                         "No discussion yet.".to_string()
                     } else {
                         let disc_prompt = DiscussionSummaryPrompt {
-                            repo: repo_name.to_string(),
-                            number: issue.number,
-                            title: issue.title.clone(),
-                            comments: data.comments_text.clone(),
+                            repo: repo_name_owned,
+                            number,
+                            title: title.clone(),
+                            comments: comments_text,
                             previous_summary: None,
-                            summary_length: ctx.summary_length.clone(),
+                            summary_length,
                         };
-                        ctx.agent.invoke(&disc_prompt).await.map_err(|e| {
-                            eprintln!("  Error summarizing discussion #{}: {e}", issue.number);
-                            e
-                        })?
+                        agent.invoke(&disc_prompt).await?
                     };
 
-                    let _ = db::save_issue_cache(
-                        ctx.conn,
-                        repo_name,
-                        issue.number,
-                        &issue_sum,
-                        &discussion_sum,
-                        &data.discussion_hash,
-                    );
-                    issue_summaries.insert(issue.number, issue_sum);
-                    discussion_summaries.insert(issue.number, discussion_sum);
-                }
+                    Ok((number, issue_sum, discussion_sum, disc_hash))
+                }));
+            }
+
+            // Drain futures as they complete
+            let mut completed = 0usize;
+            while let Some(result) = futs.next().await {
+                let (number, issue_sum, disc_sum, disc_hash) = result?;
+                completed += 1;
+
+                let title = issues.iter().find(|i| i.number == number)
+                    .map(|i| i.title.as_str()).unwrap_or("");
+                ctx.progress.issue_step(completed, uncached_count, number, title);
+
+                let _ = db::save_issue_cache(ctx.conn, repo_name, number, &issue_sum, &disc_sum, &disc_hash);
+                issue_summaries.insert(number, issue_sum);
+                discussion_summaries.insert(number, disc_sum);
+            }
+
+            if uncached_count > 0 {
+                ctx.progress.repo_done(repo_name);
             }
 
             // Build final per-issue summary strings in original order

@@ -47,7 +47,7 @@ pub async fn run_pipeline(
     progress: &dyn PipelineProgress,
     template: Option<&str>,
 ) -> Result<Report> {
-    let mut ctx = PipelineContext::new(config, conn, agent, since, date_label, template);
+    let mut ctx = PipelineContext::new(config, conn, agent, progress, since, date_label, template);
 
     let tasks: Vec<Box<dyn Task>> = vec![
         Box::new(FetchDataTask),

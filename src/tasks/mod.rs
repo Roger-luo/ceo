@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::db::CommentRow;
 use crate::error::PipelineError;
 use crate::github::Issue;
+use crate::pipeline::PipelineProgress;
 use crate::report::{RepoSection, TeamStats};
 use crate::roadmap::Roadmap;
 
@@ -35,6 +36,7 @@ pub struct PipelineContext<'a> {
     pub config: &'a Config,
     pub conn: &'a rusqlite::Connection,
     pub agent: &'a dyn Agent,
+    pub progress: &'a dyn PipelineProgress,
     pub since: String,
     pub date_label: String,
     pub template: Option<String>,
@@ -69,6 +71,7 @@ impl<'a> PipelineContext<'a> {
         config: &'a Config,
         conn: &'a rusqlite::Connection,
         agent: &'a dyn Agent,
+        progress: &'a dyn PipelineProgress,
         since: &str,
         date_label: &str,
         template: Option<&str>,
@@ -77,6 +80,7 @@ impl<'a> PipelineContext<'a> {
             config,
             conn,
             agent,
+            progress,
             since: since.to_string(),
             date_label: date_label.to_string(),
             template: template.map(String::from),

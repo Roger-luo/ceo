@@ -211,7 +211,7 @@ fn build_report_blocks(report: &Report) -> Vec<Value> {
 
     // Executive summary
     if let Some(summary) = &report.executive_summary {
-        let text = convert_inline(&expand_github_tags(summary, ""));
+        let text = convert_markdown(&expand_github_tags(summary, ""));
         // Chunk if needed (3000 char limit per section)
         for chunk in chunk_text(&text, 3000) {
             blocks.push(section_block(&chunk));
@@ -227,22 +227,16 @@ fn build_report_blocks(report: &Report) -> Vec<Value> {
         blocks.push(section_block(&format!("*{}*", repo.name)));
         let mut details = String::new();
         if let Some(done) = &repo.done {
-            details.push_str(&format!(
-                "*Done:* {}\n",
-                convert_inline(&expand_github_tags(done, &repo.name))
-            ));
+            details.push_str("*Done:*\n");
+            details.push_str(&convert_markdown(&expand_github_tags(done, &repo.name)));
         }
         if let Some(ip) = &repo.in_progress {
-            details.push_str(&format!(
-                "*In Progress:* {}\n",
-                convert_inline(&expand_github_tags(ip, &repo.name))
-            ));
+            details.push_str("*In Progress:*\n");
+            details.push_str(&convert_markdown(&expand_github_tags(ip, &repo.name)));
         }
         if let Some(next) = &repo.next {
-            details.push_str(&format!(
-                "*Next:* {}\n",
-                convert_inline(&expand_github_tags(next, &repo.name))
-            ));
+            details.push_str("*Next:*\n");
+            details.push_str(&convert_markdown(&expand_github_tags(next, &repo.name)));
         }
         if !repo.flagged_issues.is_empty() {
             details.push_str("*Needs Attention:*\n");
@@ -253,7 +247,7 @@ fn build_report_blocks(report: &Report) -> Vec<Value> {
                     issue.number,
                     issue.title,
                     missing,
-                    convert_inline(&expand_github_tags(&issue.summary, &repo.name))
+                    convert_inline_spans(&expand_github_tags(&issue.summary, &repo.name))
                 ));
             }
         }
@@ -298,7 +292,7 @@ fn build_summary_blocks(report: &Report) -> Vec<Value> {
     blocks.push(header_block(&format!("Project Report — {}", report.date)));
 
     if let Some(summary) = &report.executive_summary {
-        let text = convert_inline(&expand_github_tags(summary, ""));
+        let text = convert_markdown(&expand_github_tags(summary, ""));
         for chunk in chunk_text(&text, 3000) {
             blocks.push(section_block(&chunk));
         }
@@ -422,13 +416,65 @@ fn chunk_text(text: &str, max: usize) -> Vec<String> {
 }
 
 // ============================================================================
-// Inline markdown → Slack mrkdwn conversion
+// Markdown → Slack mrkdwn conversion
 // ============================================================================
 
-/// Convert inline markdown to Slack mrkdwn:
+/// Convert a block of GitHub-flavored markdown to Slack mrkdwn.
+///
+/// Handles:
+/// - `# / ## / ###` headings → `*bold*`
+/// - `**bold**` → `*bold*`
+/// - `- item` / `* item` → `• item`
+/// - `[text](url)` → `<url|text>`
+/// - `---` → divider line
+fn convert_markdown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let trimmed = line.trim();
+        // Count leading spaces on original line for nesting detection
+        let indent = line.len() - line.trim_start().len();
+
+        // Headings
+        if let Some(rest) = trimmed.strip_prefix("### ") {
+            out.push_str(&format!("*{}*\n", convert_inline_spans(rest.trim())));
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("## ") {
+            out.push_str(&format!("*{}*\n", convert_inline_spans(rest.trim())));
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            out.push_str(&format!("*{}*\n", convert_inline_spans(rest.trim())));
+            continue;
+        }
+
+        // Horizontal rules
+        if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+            out.push_str("───────────────────────\n");
+            continue;
+        }
+
+        // List items: detect nesting by indentation
+        if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+            if indent >= 2 {
+                out.push_str(&format!("    ◦ {}\n", convert_inline_spans(rest)));
+            } else {
+                out.push_str(&format!("• {}\n", convert_inline_spans(rest)));
+            }
+            continue;
+        }
+
+        // Regular line — convert inline spans
+        out.push_str(&convert_inline_spans(trimmed));
+        out.push('\n');
+    }
+    out
+}
+
+/// Convert inline markdown spans to Slack mrkdwn:
 /// - `**bold**` → `*bold*`
 /// - `[text](url)` → `<url|text>`
-fn convert_inline(line: &str) -> String {
+fn convert_inline_spans(line: &str) -> String {
     let mut result = line.to_string();
 
     // Bold: **text** → *text*
@@ -593,13 +639,46 @@ mod tests {
 
     #[test]
     fn test_bold_conversion() {
-        assert_eq!(convert_inline("**Done:** hello"), "*Done:* hello");
+        assert_eq!(convert_inline_spans("**Done:** hello"), "*Done:* hello");
     }
 
     #[test]
     fn test_link_conversion() {
-        let result = convert_inline("[click](https://example.com)");
+        let result = convert_inline_spans("[click](https://example.com)");
         assert_eq!(result, "<https://example.com|click>");
+    }
+
+    #[test]
+    fn test_heading_conversion() {
+        let text = "## Highlights\n- Item one\n- Item two\n";
+        let result = convert_markdown(text);
+        assert!(result.contains("*Highlights*"), "## should become bold");
+        assert!(result.contains("• Item one"), "- should become •");
+        assert!(result.contains("• Item two"));
+    }
+
+    #[test]
+    fn test_nested_bullet_conversion() {
+        let text = "- Top\n  - Nested\n";
+        let result = convert_markdown(text);
+        assert!(result.contains("• Top"));
+        assert!(result.contains("◦ Nested"));
+    }
+
+    #[test]
+    fn test_hr_conversion() {
+        let result = convert_markdown("---\n");
+        assert!(result.contains("───"));
+    }
+
+    #[test]
+    fn test_mixed_markdown() {
+        let text = "# Summary\n\n**Key wins:**\n- Shipped [feature](https://example.com)\n- Fixed **critical** bug\n";
+        let result = convert_markdown(text);
+        assert!(result.contains("*Summary*"));
+        assert!(result.contains("*Key wins:*"));
+        assert!(result.contains("• Shipped <https://example.com|feature>"));
+        assert!(result.contains("• Fixed *critical* bug"));
     }
 
     #[test]

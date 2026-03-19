@@ -1,12 +1,14 @@
 use anyhow::{bail, Context, Result};
 use log::debug;
+use serde_json::{json, Value};
 
 use crate::config::SlackConfig;
+use crate::report::{expand_github_tags, Report, TeamStats};
 
 const ENV_WEBHOOK: &str = "CEO_SLACK_WEBHOOK";
+const ENV_TOKEN: &str = "CEO_SLACK_TOKEN";
 
-/// Resolve the Slack webhook URL: $CEO_SLACK_WEBHOOK env var takes precedence,
-/// then falls back to the config file value.
+/// Resolve the Slack webhook URL: env var takes precedence over config.
 fn resolve_webhook_url(config: Option<&SlackConfig>) -> Result<String> {
     if let Ok(url) = std::env::var(ENV_WEBHOOK) {
         if !url.is_empty() {
@@ -18,24 +20,58 @@ fn resolve_webhook_url(config: Option<&SlackConfig>) -> Result<String> {
             return Ok(url.to_string());
         }
     }
-    bail!("Slack webhook URL not configured. Set $CEO_SLACK_WEBHOOK or add webhook_url under [slack] in config.toml")
+    bail!("Slack webhook URL not configured. Set ${ENV_WEBHOOK} or add webhook_url under [slack] in config.toml")
 }
 
-/// Send a markdown report to Slack via an incoming webhook.
-pub async fn send_report(markdown: &str, slack_config: Option<&SlackConfig>) -> Result<()> {
-    let url = resolve_webhook_url(slack_config)?;
-    let channel = slack_config.and_then(|c| c.channel.as_deref());
-    let mrkdwn = markdown_to_mrkdwn(markdown);
+/// Resolve the Slack bot token (optional): env var takes precedence over config.
+fn resolve_bot_token(config: Option<&SlackConfig>) -> Option<String> {
+    if let Ok(tok) = std::env::var(ENV_TOKEN) {
+        if !tok.is_empty() {
+            return Some(tok);
+        }
+    }
+    config.and_then(|c| c.bot_token.as_deref())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+}
 
-    // Slack has a 3000-char limit per text block, so we chunk into sections.
-    let blocks = build_blocks(&mrkdwn, channel);
-    let payload = serde_json::json!({ "blocks": blocks });
-
-    debug!("Sending Slack payload ({} blocks)", blocks.as_array().map_or(0, |a| a.len()));
-
+/// Send a report to Slack.
+///
+/// - With a bot token: posts a summary message, then uploads the full markdown
+///   report as a file in a thread reply.
+/// - Without a bot token (webhook only): posts a single well-formatted message
+///   using Block Kit.
+pub async fn send_report(
+    report: &Report,
+    markdown: &str,
+    slack_config: Option<&SlackConfig>,
+) -> Result<()> {
     let client = reqwest::Client::new();
+    let channel = slack_config.and_then(|c| c.channel.as_deref());
+
+    if let Some(token) = resolve_bot_token(slack_config) {
+        send_threaded(&client, &token, channel, report, markdown).await
+    } else {
+        let url = resolve_webhook_url(slack_config)?;
+        send_webhook(&client, &url, report).await
+    }
+}
+
+// ============================================================================
+// Webhook path: single well-formatted message
+// ============================================================================
+
+async fn send_webhook(client: &reqwest::Client, url: &str, report: &Report) -> Result<()> {
+    let blocks = build_report_blocks(report);
+    let payload = json!({ "blocks": blocks });
+
+    debug!(
+        "Sending Slack webhook ({} blocks)",
+        blocks.len()
+    );
+
     let resp = client
-        .post(&url)
+        .post(url)
         .json(&payload)
         .send()
         .await
@@ -46,22 +82,330 @@ pub async fn send_report(markdown: &str, slack_config: Option<&SlackConfig>) -> 
         let body = resp.text().await.unwrap_or_default();
         bail!("Slack webhook returned {status}: {body}");
     }
+    Ok(())
+}
+
+// ============================================================================
+// Bot token path: summary + threaded file upload
+// ============================================================================
+
+async fn send_threaded(
+    client: &reqwest::Client,
+    token: &str,
+    channel: Option<&str>,
+    report: &Report,
+    markdown: &str,
+) -> Result<()> {
+    let channel = channel
+        .ok_or_else(|| anyhow::anyhow!("slack.channel is required when using a bot token"))?;
+
+    // 1. Post summary message
+    let blocks = build_summary_blocks(report);
+    let msg_payload = json!({
+        "channel": channel,
+        "blocks": blocks,
+        "text": format!("Project Report — {}", report.date), // fallback for notifications
+    });
+
+    debug!("Posting summary to {channel} ({} blocks)", blocks.len());
+
+    let resp = client
+        .post("https://slack.com/api/chat.postMessage")
+        .bearer_auth(token)
+        .json(&msg_payload)
+        .send()
+        .await
+        .context("Failed to post Slack message")?;
+
+    let body: Value = resp.json().await.context("Failed to parse Slack response")?;
+    if body["ok"].as_bool() != Some(true) {
+        bail!("Slack chat.postMessage failed: {}", body["error"].as_str().unwrap_or("unknown"));
+    }
+
+    let thread_ts = body["ts"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Slack response missing ts field"))?;
+
+    // 2. Upload full report as a .md snippet in the thread
+    upload_file(client, token, channel, thread_ts, markdown, report).await?;
 
     Ok(())
 }
 
-/// Build Slack Block Kit blocks from mrkdwn text, respecting the 3000-char section limit.
-fn build_blocks(mrkdwn: &str, _channel: Option<&str>) -> serde_json::Value {
-    const MAX_SECTION: usize = 3000;
+async fn upload_file(
+    client: &reqwest::Client,
+    token: &str,
+    channel: &str,
+    thread_ts: &str,
+    markdown: &str,
+    report: &Report,
+) -> Result<()> {
+    let filename = format!("report-{}.md", report.date);
 
-    let mut blocks = Vec::new();
+    // Step 1: Get upload URL
+    let resp = client
+        .get("https://slack.com/api/files.getUploadURLExternal")
+        .bearer_auth(token)
+        .query(&[
+            ("filename", filename.as_str()),
+            ("length", &markdown.len().to_string()),
+        ])
+        .send()
+        .await
+        .context("Failed to get Slack upload URL")?;
+
+    let body: Value = resp.json().await?;
+    if body["ok"].as_bool() != Some(true) {
+        bail!("files.getUploadURLExternal failed: {}", body["error"].as_str().unwrap_or("unknown"));
+    }
+
+    let upload_url = body["upload_url"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing upload_url in response"))?;
+    let file_id = body["file_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing file_id in response"))?;
+
+    // Step 2: Upload content
+    client
+        .post(upload_url)
+        .body(markdown.to_string())
+        .send()
+        .await
+        .context("Failed to upload file content")?;
+
+    // Step 3: Complete upload, attach to thread
+    let complete_payload = json!({
+        "files": [{ "id": file_id, "title": format!("Full Report — {}", report.date) }],
+        "channel_id": channel,
+        "thread_ts": thread_ts,
+    });
+
+    let resp = client
+        .post("https://slack.com/api/files.completeUploadExternal")
+        .bearer_auth(token)
+        .json(&complete_payload)
+        .send()
+        .await
+        .context("Failed to complete file upload")?;
+
+    let body: Value = resp.json().await?;
+    if body["ok"].as_bool() != Some(true) {
+        bail!("files.completeUploadExternal failed: {}", body["error"].as_str().unwrap_or("unknown"));
+    }
+
+    debug!("Uploaded report as {filename} in thread");
+    Ok(())
+}
+
+// ============================================================================
+// Block Kit builders
+// ============================================================================
+
+/// Build a complete Block Kit message from a Report (for webhook, single message).
+fn build_report_blocks(report: &Report) -> Vec<Value> {
+    let mut blocks: Vec<Value> = Vec::new();
+
+    // Header
+    blocks.push(header_block(&format!("Project Report — {}", report.date)));
+
+    // Executive summary
+    if let Some(summary) = &report.executive_summary {
+        let text = convert_inline(&expand_github_tags(summary, ""));
+        // Chunk if needed (3000 char limit per section)
+        for chunk in chunk_text(&text, 3000) {
+            blocks.push(section_block(&chunk));
+        }
+        blocks.push(divider());
+    }
+
+    // Active repos
+    let active: Vec<_> = report.repos.iter().filter(|r| r.has_activity()).collect();
+    let inactive: Vec<_> = report.repos.iter().filter(|r| !r.has_activity()).collect();
+
+    for repo in &active {
+        blocks.push(section_block(&format!("*{}*", repo.name)));
+        let mut details = String::new();
+        if let Some(done) = &repo.done {
+            details.push_str(&format!(
+                "*Done:* {}\n",
+                convert_inline(&expand_github_tags(done, &repo.name))
+            ));
+        }
+        if let Some(ip) = &repo.in_progress {
+            details.push_str(&format!(
+                "*In Progress:* {}\n",
+                convert_inline(&expand_github_tags(ip, &repo.name))
+            ));
+        }
+        if let Some(next) = &repo.next {
+            details.push_str(&format!(
+                "*Next:* {}\n",
+                convert_inline(&expand_github_tags(next, &repo.name))
+            ));
+        }
+        if !repo.flagged_issues.is_empty() {
+            details.push_str("*Needs Attention:*\n");
+            for issue in &repo.flagged_issues {
+                let missing = issue.missing_labels.join(", ");
+                details.push_str(&format!(
+                    "• *#{}* \"{}\" — missing {} label. _{}_\n",
+                    issue.number,
+                    issue.title,
+                    missing,
+                    convert_inline(&expand_github_tags(&issue.summary, &repo.name))
+                ));
+            }
+        }
+        if !details.is_empty() {
+            for chunk in chunk_text(&details, 3000) {
+                blocks.push(section_block(&chunk));
+            }
+        }
+    }
+
+    // Inactive repos
+    if !inactive.is_empty() {
+        let names: Vec<_> = inactive.iter().map(|r| r.name.as_str()).collect();
+        blocks.push(context_block(&format!(
+            "No recent activity: {}",
+            names.join(", ")
+        )));
+    }
+
+    // Team stats
+    if !report.team_stats.is_empty() {
+        blocks.push(divider());
+        blocks.push(section_block("*Team Overview*"));
+        build_team_blocks(&mut blocks, &report.team_stats);
+    }
+
+    // Footer
+    blocks.push(context_block(&format!(
+        "Generated by ceo-cli on {}",
+        report.date
+    )));
+
+    // Slack max is 50 blocks
+    blocks.truncate(50);
+    blocks
+}
+
+/// Build a summary-only Block Kit message (for bot token path — parent message).
+fn build_summary_blocks(report: &Report) -> Vec<Value> {
+    let mut blocks: Vec<Value> = Vec::new();
+
+    blocks.push(header_block(&format!("Project Report — {}", report.date)));
+
+    if let Some(summary) = &report.executive_summary {
+        let text = convert_inline(&expand_github_tags(summary, ""));
+        for chunk in chunk_text(&text, 3000) {
+            blocks.push(section_block(&chunk));
+        }
+    } else {
+        // No executive summary — build a quick overview
+        let active_count = report.repos.iter().filter(|r| r.has_activity()).count();
+        let total = report.repos.len();
+        blocks.push(section_block(&format!(
+            "{active_count} of {total} repos had activity this period."
+        )));
+    }
+
+    // Compact team stats
+    if !report.team_stats.is_empty() {
+        blocks.push(divider());
+        blocks.push(section_block("*Team Overview*"));
+        build_team_blocks(&mut blocks, &report.team_stats);
+    }
+
+    blocks.push(context_block("_Full report attached in thread_ :thread:"));
+
+    blocks.truncate(50);
+    blocks
+}
+
+/// Render team stats using Block Kit fields (2-column layout).
+fn build_team_blocks(blocks: &mut Vec<Value>, stats: &[TeamStats]) {
+    let active: Vec<_> = stats
+        .iter()
+        .filter(|m| m.active > 0 || m.closed_this_week > 0 || m.additions > 0 || m.deletions > 0)
+        .collect();
+    let inactive: Vec<_> = stats
+        .iter()
+        .filter(|m| m.active == 0 && m.closed_this_week == 0 && m.additions == 0 && m.deletions == 0)
+        .collect();
+
+    if !active.is_empty() {
+        // Build a code-block table for clean alignment
+        let mut table = String::from("```\n");
+        table.push_str(&format!(
+            "{:<20} {:>6} {:>6} {:>12}\n",
+            "Person", "Active", "Closed", "Lines"
+        ));
+        table.push_str(&format!("{}\n", "─".repeat(48)));
+        for m in &active {
+            table.push_str(&format!(
+                "{:<20} {:>6} {:>6}  +{:<5} -{:<5}\n",
+                format!("{} @{}", m.name, m.github),
+                m.active,
+                m.closed_this_week,
+                m.additions,
+                m.deletions
+            ));
+        }
+        table.push_str("```");
+
+        for chunk in chunk_text(&table, 3000) {
+            blocks.push(section_block(&chunk));
+        }
+    }
+
+    if !inactive.is_empty() {
+        let names: Vec<_> = inactive
+            .iter()
+            .map(|m| format!("{} (@{})", m.name, m.github))
+            .collect();
+        blocks.push(context_block(&format!("No activity: {}", names.join(", "))));
+    }
+}
+
+// ============================================================================
+// Block Kit primitives
+// ============================================================================
+
+fn header_block(text: &str) -> Value {
+    json!({
+        "type": "header",
+        "text": { "type": "plain_text", "text": &text[..text.len().min(150)] }
+    })
+}
+
+fn section_block(text: &str) -> Value {
+    json!({
+        "type": "section",
+        "text": { "type": "mrkdwn", "text": text }
+    })
+}
+
+fn divider() -> Value {
+    json!({ "type": "divider" })
+}
+
+fn context_block(text: &str) -> Value {
+    json!({
+        "type": "context",
+        "elements": [{ "type": "mrkdwn", "text": text }]
+    })
+}
+
+/// Split text into chunks of at most `max` characters, breaking at newlines.
+fn chunk_text(text: &str, max: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
     let mut current = String::new();
 
-    for line in mrkdwn.lines() {
-        // If adding this line would exceed the limit, flush
-        if !current.is_empty() && current.len() + line.len() + 1 > MAX_SECTION {
-            blocks.push(section_block(&current));
-            current.clear();
+    for line in text.lines() {
+        if !current.is_empty() && current.len() + line.len() + 1 > max {
+            chunks.push(std::mem::take(&mut current));
         }
         if !current.is_empty() {
             current.push('\n');
@@ -69,96 +413,17 @@ fn build_blocks(mrkdwn: &str, _channel: Option<&str>) -> serde_json::Value {
         current.push_str(line);
     }
     if !current.is_empty() {
-        blocks.push(section_block(&current));
+        chunks.push(current);
     }
-
-    serde_json::Value::Array(blocks)
-}
-
-fn section_block(text: &str) -> serde_json::Value {
-    serde_json::json!({
-        "type": "section",
-        "text": {
-            "type": "mrkdwn",
-            "text": text
-        }
-    })
-}
-
-/// Convert GitHub-flavored markdown to Slack mrkdwn.
-///
-/// Key differences:
-/// - `# Heading` → `*Heading*` (bold)
-/// - `**bold**` → `*bold*`
-/// - `[text](url)` → `<url|text>`
-/// - `---` → divider (we just keep it as-is, Slack ignores it)
-/// - Tables are kept as monospace
-fn markdown_to_mrkdwn(md: &str) -> String {
-    let mut out = String::with_capacity(md.len());
-    let mut in_table = false;
-
-    for line in md.lines() {
-        let trimmed = line.trim();
-
-        // Headings: # Title → *Title*
-        if let Some(rest) = trimmed.strip_prefix("### ") {
-            flush_table(&mut out, &mut in_table);
-            out.push_str(&format!("*{}*\n", rest.trim()));
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("## ") {
-            flush_table(&mut out, &mut in_table);
-            out.push('\n');
-            out.push_str(&format!("*{}*\n", rest.trim()));
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("# ") {
-            flush_table(&mut out, &mut in_table);
-            out.push('\n');
-            out.push_str(&format!("*{}*\n", rest.trim()));
-            continue;
-        }
-
-        // Horizontal rules → divider-like spacing
-        if trimmed == "---" {
-            flush_table(&mut out, &mut in_table);
-            out.push_str("───────────────────────\n");
-            continue;
-        }
-
-        // Table rows: keep as-is but wrap in code-style if first table row
-        if trimmed.starts_with('|') && trimmed.ends_with('|') {
-            // Skip separator rows (|---|---|)
-            if trimmed.contains("---") {
-                continue;
-            }
-            if !in_table {
-                in_table = true;
-                out.push_str("```\n");
-            }
-            out.push_str(trimmed);
-            out.push('\n');
-            continue;
-        }
-
-        flush_table(&mut out, &mut in_table);
-
-        // Convert inline markdown
-        let converted = convert_inline(trimmed);
-        out.push_str(&converted);
-        out.push('\n');
+    if chunks.is_empty() {
+        chunks.push(String::new());
     }
-
-    flush_table(&mut out, &mut in_table);
-    out
+    chunks
 }
 
-fn flush_table(out: &mut String, in_table: &mut bool) {
-    if *in_table {
-        out.push_str("```\n");
-        *in_table = false;
-    }
-}
+// ============================================================================
+// Inline markdown → Slack mrkdwn conversion
+// ============================================================================
 
 /// Convert inline markdown to Slack mrkdwn:
 /// - `**bold**` → `*bold*`
@@ -185,12 +450,18 @@ fn convert_inline(line: &str) -> String {
 
 fn convert_links(text: &mut String) {
     loop {
-        let Some(bracket_start) = text.find('[') else { break };
+        let Some(bracket_start) = text.find('[') else {
+            break;
+        };
         let search_from = bracket_start + 1;
-        let Some(bracket_end_offset) = text[search_from..].find("](") else { break };
+        let Some(bracket_end_offset) = text[search_from..].find("](") else {
+            break;
+        };
         let bracket_end = search_from + bracket_end_offset;
         let url_start = bracket_end + 2;
-        let Some(paren_end_offset) = text[url_start..].find(')') else { break };
+        let Some(paren_end_offset) = text[url_start..].find(')') else {
+            break;
+        };
         let paren_end = url_start + paren_end_offset;
 
         let link_text = text[search_from..bracket_end].to_string();
@@ -204,42 +475,168 @@ fn convert_links(text: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::report::{FlaggedIssue, RepoSection};
+
+    fn sample_report() -> Report {
+        Report {
+            date: "2026-03-19".to_string(),
+            executive_summary: Some("All systems operational. Key highlights this week.".to_string()),
+            repos: vec![
+                RepoSection {
+                    name: "org/frontend".to_string(),
+                    done: Some("Shipped new dashboard".to_string()),
+                    in_progress: Some("Working on auth flow".to_string()),
+                    next: None,
+                    flagged_issues: vec![],
+                },
+                RepoSection {
+                    name: "org/backend".to_string(),
+                    done: None,
+                    in_progress: None,
+                    next: None,
+                    flagged_issues: vec![],
+                },
+            ],
+            team_stats: vec![
+                TeamStats {
+                    name: "Alice".to_string(),
+                    github: "alice".to_string(),
+                    active: 3,
+                    closed_this_week: 2,
+                    additions: 150,
+                    deletions: 40,
+                },
+            ],
+        }
+    }
 
     #[test]
-    fn test_heading_conversion() {
-        let md = "# Project Report — 2026-03-19\n\n## org/repo\n";
-        let result = markdown_to_mrkdwn(md);
-        assert!(result.contains("*Project Report — 2026-03-19*"));
-        assert!(result.contains("*org/repo*"));
+    fn test_webhook_blocks_have_header() {
+        let report = sample_report();
+        let blocks = build_report_blocks(&report);
+        assert_eq!(blocks[0]["type"], "header");
+        assert!(blocks[0]["text"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("2026-03-19"));
+    }
+
+    #[test]
+    fn test_webhook_blocks_have_divider_after_summary() {
+        let report = sample_report();
+        let blocks = build_report_blocks(&report);
+        // Find divider after executive summary
+        let has_divider = blocks.iter().any(|b| b["type"] == "divider");
+        assert!(has_divider);
+    }
+
+    #[test]
+    fn test_webhook_blocks_include_team_code_block() {
+        let report = sample_report();
+        let blocks = build_report_blocks(&report);
+        let team_block = blocks.iter().find(|b| {
+            b["text"]["text"]
+                .as_str()
+                .map(|t| t.contains("```") && t.contains("Alice"))
+                .unwrap_or(false)
+        });
+        assert!(team_block.is_some(), "Expected team stats code block");
+    }
+
+    #[test]
+    fn test_webhook_blocks_max_50() {
+        let mut report = sample_report();
+        // Add many repos to push block count
+        for i in 0..60 {
+            report.repos.push(RepoSection {
+                name: format!("org/repo-{i}"),
+                done: Some(format!("Done item {i}")),
+                in_progress: Some(format!("In progress {i}")),
+                next: Some(format!("Next {i}")),
+                flagged_issues: vec![],
+            });
+        }
+        let blocks = build_report_blocks(&report);
+        assert!(blocks.len() <= 50, "Blocks should be truncated to 50");
+    }
+
+    #[test]
+    fn test_summary_blocks_have_thread_hint() {
+        let report = sample_report();
+        let blocks = build_summary_blocks(&report);
+        let has_thread_hint = blocks.iter().any(|b| {
+            b["elements"]
+                .as_array()
+                .and_then(|elems| elems.first())
+                .and_then(|e| e["text"].as_str())
+                .map(|t| t.contains("thread"))
+                .unwrap_or(false)
+        });
+        assert!(has_thread_hint, "Summary should mention thread");
+    }
+
+    #[test]
+    fn test_inactive_repos_in_context() {
+        let report = sample_report();
+        let blocks = build_report_blocks(&report);
+        let context = blocks.iter().find(|b| {
+            b["type"] == "context"
+                && b["elements"]
+                    .as_array()
+                    .and_then(|e| e.first())
+                    .and_then(|e| e["text"].as_str())
+                    .map(|t| t.contains("org/backend"))
+                    .unwrap_or(false)
+        });
+        assert!(context.is_some(), "Inactive repos should appear in context block");
     }
 
     #[test]
     fn test_bold_conversion() {
-        let md = "**Done:** Fixed the bug\n";
-        let result = markdown_to_mrkdwn(md);
-        assert!(result.contains("*Done:* Fixed the bug"));
+        assert_eq!(convert_inline("**Done:** hello"), "*Done:* hello");
     }
 
     #[test]
     fn test_link_conversion() {
-        let md = "[@user](https://github.com/user) opened [#42](https://github.com/org/repo/issues/42)\n";
-        let result = markdown_to_mrkdwn(md);
-        assert!(result.contains("<https://github.com/user|@user>"));
-        assert!(result.contains("<https://github.com/org/repo/issues/42|#42>"));
+        let result = convert_inline("[click](https://example.com)");
+        assert_eq!(result, "<https://example.com|click>");
     }
 
     #[test]
-    fn test_table_wrapped_in_code() {
-        let md = "| Person | Active |\n|--------|--------|\n| Alice | 3 |\n";
-        let result = markdown_to_mrkdwn(md);
-        assert!(result.contains("```\n| Person | Active |"));
-        assert!(!result.contains("---"));
+    fn test_chunk_text() {
+        let text = "line1\nline2\nline3";
+        let chunks = chunk_text(text, 12);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], "line1\nline2");
+        assert_eq!(chunks[1], "line3");
     }
 
     #[test]
-    fn test_hr_conversion() {
-        let md = "---\n";
-        let result = markdown_to_mrkdwn(md);
-        assert!(result.contains("───"));
+    fn test_flagged_issues_in_blocks() {
+        let report = Report {
+            date: "2026-03-19".to_string(),
+            executive_summary: None,
+            repos: vec![RepoSection {
+                name: "org/repo".to_string(),
+                done: Some("stuff".to_string()),
+                in_progress: None,
+                next: None,
+                flagged_issues: vec![FlaggedIssue {
+                    number: 42,
+                    title: "Fix login".to_string(),
+                    missing_labels: vec!["priority".to_string()],
+                    summary: "Login is broken".to_string(),
+                }],
+            }],
+            team_stats: vec![],
+        };
+        let blocks = build_report_blocks(&report);
+        let has_flagged = blocks.iter().any(|b| {
+            b["text"]["text"]
+                .as_str()
+                .map(|t| t.contains("#42") && t.contains("priority"))
+                .unwrap_or(false)
+        });
+        assert!(has_flagged, "Flagged issues should appear in blocks");
     }
 }

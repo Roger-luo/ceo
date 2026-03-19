@@ -346,8 +346,13 @@ pub struct SlackConfig {
     /// Incoming webhook URL. Can also be set via $CEO_SLACK_WEBHOOK (env var takes precedence).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook_url: Option<String>,
-    /// Optional channel override (e.g. "#engineering-updates").
-    /// If omitted, the webhook's default channel is used.
+    /// Bot OAuth token (xoxb-...) for threading and file uploads.
+    /// Can also be set via $CEO_SLACK_TOKEN (env var takes precedence).
+    /// When set, posts a summary then uploads the full report in a thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_token: Option<String>,
+    /// Channel to post to (e.g. "#engineering-updates" or "C1234567890").
+    /// Required when using bot_token. Optional for webhooks (uses webhook default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
 }
@@ -454,6 +459,9 @@ impl Config {
                 .unwrap_or_default()),
             "slack.webhook_url" => Ok(self.slack.as_ref()
                 .and_then(|s| s.webhook_url.clone())
+                .unwrap_or_default()),
+            "slack.bot_token" => Ok(self.slack.as_ref()
+                .and_then(|s| s.bot_token.clone())
                 .unwrap_or_default()),
             "slack.channel" => Ok(self.slack.as_ref()
                 .and_then(|s| s.channel.clone())
@@ -625,7 +633,15 @@ impl Config {
                 if let Some(ref mut s) = self.slack {
                     s.webhook_url = url;
                 } else {
-                    self.slack = Some(SlackConfig { webhook_url: url, channel: None });
+                    self.slack = Some(SlackConfig { webhook_url: url, bot_token: None, channel: None });
+                }
+            }
+            "slack.bot_token" => {
+                let token = if value.is_empty() { None } else { Some(value.to_string()) };
+                if let Some(ref mut s) = self.slack {
+                    s.bot_token = token;
+                } else {
+                    self.slack = Some(SlackConfig { webhook_url: None, bot_token: token, channel: None });
                 }
             }
             "slack.channel" => {
@@ -633,7 +649,7 @@ impl Config {
                 if let Some(ref mut s) = self.slack {
                     s.channel = channel;
                 } else {
-                    self.slack = Some(SlackConfig { webhook_url: None, channel });
+                    self.slack = Some(SlackConfig { webhook_url: None, bot_token: None, channel });
                 }
             }
             _ => return Err(ConfigError::UnknownKey(key.to_string())),
@@ -749,7 +765,8 @@ impl Config {
             name: "Slack",
             fields: vec![
                 FormFieldSpec { key: "slack.webhook_url", label: "Webhook URL", placeholder: "https://hooks.slack.com/services/...", options: vec![] },
-                FormFieldSpec { key: "slack.channel", label: "Channel", placeholder: "(webhook default)", options: vec![] },
+                FormFieldSpec { key: "slack.bot_token", label: "Bot token", placeholder: "xoxb-... (optional, enables threading)", options: vec![] },
+                FormFieldSpec { key: "slack.channel", label: "Channel", placeholder: "#channel (required for bot token)", options: vec![] },
             ],
         }));
 

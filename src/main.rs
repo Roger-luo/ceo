@@ -292,7 +292,7 @@ async fn cmd_report(days: i64, month: Option<String>, template: Option<String>, 
     let markdown = ceo::report::render_markdown(&report_data);
 
     if slack {
-        ceo::slack::send_report(&markdown, config.slack.as_ref()).await?;
+        ceo::slack::send_report(&report_data, &markdown, config.slack.as_ref()).await?;
         eprintln!("Report sent to Slack.");
     } else {
         print!("{markdown}");

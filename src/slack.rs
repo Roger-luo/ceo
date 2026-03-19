@@ -49,11 +49,15 @@ pub async fn send_report(
     let client = reqwest::Client::new();
     let channel = slack_config.and_then(|c| c.channel.as_deref());
 
+    let sort = slack_config
+        .and_then(|c| c.sort.as_deref())
+        .unwrap_or("alphabetical");
+
     if let Some(token) = resolve_bot_token(slack_config) {
-        send_threaded(&client, &token, channel, report, markdown).await
+        send_threaded(&client, &token, channel, report, markdown, sort).await
     } else {
         let url = resolve_webhook_url(slack_config)?;
-        send_webhook(&client, &url, report).await
+        send_webhook(&client, &url, report, sort).await
     }
 }
 
@@ -61,8 +65,8 @@ pub async fn send_report(
 // Webhook path: single well-formatted message
 // ============================================================================
 
-async fn send_webhook(client: &reqwest::Client, url: &str, report: &Report) -> Result<()> {
-    let blocks = build_report_blocks(report);
+async fn send_webhook(client: &reqwest::Client, url: &str, report: &Report, sort: &str) -> Result<()> {
+    let blocks = build_report_blocks(report, sort);
     let payload = json!({ "blocks": blocks });
 
     debug!(
@@ -95,12 +99,13 @@ async fn send_threaded(
     channel: Option<&str>,
     report: &Report,
     markdown: &str,
+    sort: &str,
 ) -> Result<()> {
     let channel = channel
         .ok_or_else(|| anyhow::anyhow!("slack.channel is required when using a bot token"))?;
 
     // 1. Post summary message
-    let blocks = build_summary_blocks(report);
+    let blocks = build_summary_blocks(report, sort);
     let msg_payload = json!({
         "channel": channel,
         "blocks": blocks,
@@ -203,64 +208,23 @@ async fn upload_file(
 // ============================================================================
 
 /// Build a complete Block Kit message from a Report (for webhook, single message).
-fn build_report_blocks(report: &Report) -> Vec<Value> {
+///
+/// Layout is reversed so the summary appears at the bottom — in Slack's scrollback
+/// this means it's the first thing people see when the message lands.
+///
+/// Order: repo details → inactive → team → divider → executive summary → header
+fn build_report_blocks(report: &Report, sort: &str) -> Vec<Value> {
     let mut blocks: Vec<Value> = Vec::new();
 
-    // Header
-    blocks.push(header_block(&format!("Project Report — {}", report.date)));
+    // --- Repo details (top = oldest in scroll, read last) ---
+    let mut active: Vec<_> = report.repos.iter().filter(|r| r.has_activity()).collect();
+    let mut inactive: Vec<_> = report.repos.iter().filter(|r| !r.has_activity()).collect();
 
-    // Executive summary
-    if let Some(summary) = &report.executive_summary {
-        let text = convert_markdown(&expand_github_tags(summary, ""));
-        // Chunk if needed (3000 char limit per section)
-        for chunk in chunk_text(&text, 3000) {
-            blocks.push(section_block(&chunk));
-        }
-        blocks.push(divider());
-    }
-
-    // Active repos
-    let active: Vec<_> = report.repos.iter().filter(|r| r.has_activity()).collect();
-    let inactive: Vec<_> = report.repos.iter().filter(|r| !r.has_activity()).collect();
+    sort_repos(&mut active, sort);
+    sort_repos(&mut inactive, sort);
 
     for repo in &active {
-        blocks.push(divider());
-        blocks.push(header_block(&repo.name));
-
-        if let Some(done) = &repo.done {
-            let text = format_category(":white_check_mark: *Done*", done, &repo.name);
-            for chunk in chunk_text(&text, 3000) {
-                blocks.push(section_block(&chunk));
-            }
-        }
-        if let Some(ip) = &repo.in_progress {
-            let text = format_category(":construction: *In Progress*", ip, &repo.name);
-            for chunk in chunk_text(&text, 3000) {
-                blocks.push(section_block(&chunk));
-            }
-        }
-        if let Some(next) = &repo.next {
-            let text = format_category(":soon: *Next*", next, &repo.name);
-            for chunk in chunk_text(&text, 3000) {
-                blocks.push(section_block(&chunk));
-            }
-        }
-        if !repo.flagged_issues.is_empty() {
-            let mut text = String::from(":warning: *Needs Attention*\n");
-            for issue in &repo.flagged_issues {
-                let missing = issue.missing_labels.join(", ");
-                text.push_str(&format!(
-                    "• *#{}* \"{}\" — missing {} label. _{}_\n",
-                    issue.number,
-                    issue.title,
-                    missing,
-                    convert_inline_spans(&expand_github_tags(&issue.summary, &repo.name))
-                ));
-            }
-            for chunk in chunk_text(&text, 3000) {
-                blocks.push(section_block(&chunk));
-            }
-        }
+        build_repo_blocks(&mut blocks, repo);
     }
 
     // Inactive repos
@@ -272,12 +236,24 @@ fn build_report_blocks(report: &Report) -> Vec<Value> {
         )));
     }
 
-    // Team stats
+    // --- Team stats ---
     if !report.team_stats.is_empty() {
         blocks.push(divider());
         blocks.push(section_block("*Team Overview*"));
         build_team_blocks(&mut blocks, &report.team_stats);
     }
+
+    // --- Executive summary + header (bottom = newest in scroll, read first) ---
+    blocks.push(divider());
+
+    if let Some(summary) = &report.executive_summary {
+        let text = convert_markdown(&expand_github_tags(summary, ""));
+        for chunk in chunk_text(&text, 3000) {
+            blocks.push(section_block(&chunk));
+        }
+    }
+
+    blocks.push(header_block(&format!("Project Report — {}", report.date)));
 
     // Footer
     blocks.push(context_block(&format!(
@@ -290,8 +266,57 @@ fn build_report_blocks(report: &Report) -> Vec<Value> {
     blocks
 }
 
+/// Sort repo sections by the configured order.
+fn sort_repos<'a>(repos: &mut Vec<&'a crate::report::RepoSection>, sort: &str) {
+    match sort {
+        "config" => {} // keep config insertion order
+        _ => repos.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+    }
+}
+
+/// Build Block Kit blocks for a single repo section.
+fn build_repo_blocks(blocks: &mut Vec<Value>, repo: &crate::report::RepoSection) {
+    blocks.push(divider());
+    blocks.push(header_block(&repo.name));
+
+    if let Some(done) = &repo.done {
+        let text = format_category(":white_check_mark: *Done*", done, &repo.name);
+        for chunk in chunk_text(&text, 3000) {
+            blocks.push(section_block(&chunk));
+        }
+    }
+    if let Some(ip) = &repo.in_progress {
+        let text = format_category(":construction: *In Progress*", ip, &repo.name);
+        for chunk in chunk_text(&text, 3000) {
+            blocks.push(section_block(&chunk));
+        }
+    }
+    if let Some(next) = &repo.next {
+        let text = format_category(":soon: *Next*", next, &repo.name);
+        for chunk in chunk_text(&text, 3000) {
+            blocks.push(section_block(&chunk));
+        }
+    }
+    if !repo.flagged_issues.is_empty() {
+        let mut text = String::from(":warning: *Needs Attention*\n");
+        for issue in &repo.flagged_issues {
+            let missing = issue.missing_labels.join(", ");
+            text.push_str(&format!(
+                "• *#{}* \"{}\" — missing {} label. _{}_\n",
+                issue.number,
+                issue.title,
+                missing,
+                convert_inline_spans(&expand_github_tags(&issue.summary, &repo.name))
+            ));
+        }
+        for chunk in chunk_text(&text, 3000) {
+            blocks.push(section_block(&chunk));
+        }
+    }
+}
+
 /// Build a summary-only Block Kit message (for bot token path — parent message).
-fn build_summary_blocks(report: &Report) -> Vec<Value> {
+fn build_summary_blocks(report: &Report, _sort: &str) -> Vec<Value> {
     let mut blocks: Vec<Value> = Vec::new();
 
     blocks.push(header_block(&format!("Project Report — {}", report.date)));
@@ -632,18 +657,22 @@ mod tests {
     #[test]
     fn test_webhook_blocks_have_header() {
         let report = sample_report();
-        let blocks = build_report_blocks(&report);
-        assert_eq!(blocks[0]["type"], "header");
-        assert!(blocks[0]["text"]["text"]
-            .as_str()
-            .unwrap()
-            .contains("2026-03-19"));
+        let blocks = build_report_blocks(&report, "alphabetical");
+        // Header is near the bottom (reversed order — summary last for Slack visibility)
+        let header = blocks.iter().find(|b| {
+            b["type"] == "header"
+                && b["text"]["text"]
+                    .as_str()
+                    .map(|t| t.contains("2026-03-19"))
+                    .unwrap_or(false)
+        });
+        assert!(header.is_some(), "Report header block should exist");
     }
 
     #[test]
     fn test_webhook_blocks_have_divider_after_summary() {
         let report = sample_report();
-        let blocks = build_report_blocks(&report);
+        let blocks = build_report_blocks(&report, "alphabetical");
         // Find divider after executive summary
         let has_divider = blocks.iter().any(|b| b["type"] == "divider");
         assert!(has_divider);
@@ -652,7 +681,7 @@ mod tests {
     #[test]
     fn test_webhook_blocks_include_team_code_block() {
         let report = sample_report();
-        let blocks = build_report_blocks(&report);
+        let blocks = build_report_blocks(&report, "alphabetical");
         let team_block = blocks.iter().find(|b| {
             b["text"]["text"]
                 .as_str()
@@ -675,14 +704,14 @@ mod tests {
                 flagged_issues: vec![],
             });
         }
-        let blocks = build_report_blocks(&report);
+        let blocks = build_report_blocks(&report, "alphabetical");
         assert!(blocks.len() <= 50, "Blocks should be truncated to 50");
     }
 
     #[test]
     fn test_summary_blocks_have_thread_hint() {
         let report = sample_report();
-        let blocks = build_summary_blocks(&report);
+        let blocks = build_summary_blocks(&report, "alphabetical");
         let has_thread_hint = blocks.iter().any(|b| {
             b["elements"]
                 .as_array()
@@ -695,9 +724,62 @@ mod tests {
     }
 
     #[test]
+    fn test_repos_sorted_alphabetically() {
+        let report = Report {
+            date: "2026-03-19".to_string(),
+            executive_summary: None,
+            repos: vec![
+                RepoSection { name: "org/zebra".into(), done: Some("x".into()), in_progress: None, next: None, flagged_issues: vec![] },
+                RepoSection { name: "org/alpha".into(), done: Some("x".into()), in_progress: None, next: None, flagged_issues: vec![] },
+                RepoSection { name: "org/middle".into(), done: Some("x".into()), in_progress: None, next: None, flagged_issues: vec![] },
+            ],
+            team_stats: vec![],
+        };
+        let blocks = build_report_blocks(&report, "alphabetical");
+        let headers: Vec<&str> = blocks.iter()
+            .filter(|b| b["type"] == "header")
+            .filter_map(|b| b["text"]["text"].as_str())
+            .filter(|t| t.starts_with("org/"))
+            .collect();
+        assert_eq!(headers, vec!["org/alpha", "org/middle", "org/zebra"]);
+    }
+
+    #[test]
+    fn test_repos_config_order_preserved() {
+        let report = Report {
+            date: "2026-03-19".to_string(),
+            executive_summary: None,
+            repos: vec![
+                RepoSection { name: "org/zebra".into(), done: Some("x".into()), in_progress: None, next: None, flagged_issues: vec![] },
+                RepoSection { name: "org/alpha".into(), done: Some("x".into()), in_progress: None, next: None, flagged_issues: vec![] },
+            ],
+            team_stats: vec![],
+        };
+        let blocks = build_report_blocks(&report, "config");
+        let headers: Vec<&str> = blocks.iter()
+            .filter(|b| b["type"] == "header")
+            .filter_map(|b| b["text"]["text"].as_str())
+            .filter(|t| t.starts_with("org/"))
+            .collect();
+        assert_eq!(headers, vec!["org/zebra", "org/alpha"]);
+    }
+
+    #[test]
+    fn test_summary_at_bottom() {
+        let report = sample_report();
+        let blocks = build_report_blocks(&report, "alphabetical");
+        // The report header should be near the end, not at the start
+        let header_idx = blocks.iter().position(|b| {
+            b["type"] == "header"
+                && b["text"]["text"].as_str().map(|t| t.contains("Project Report")).unwrap_or(false)
+        }).unwrap();
+        assert!(header_idx > blocks.len() / 2, "Report header should be in bottom half (idx={header_idx}, len={})", blocks.len());
+    }
+
+    #[test]
     fn test_inactive_repos_in_context() {
         let report = sample_report();
-        let blocks = build_report_blocks(&report);
+        let blocks = build_report_blocks(&report, "alphabetical");
         let context = blocks.iter().find(|b| {
             b["type"] == "context"
                 && b["elements"]
@@ -737,7 +819,7 @@ mod tests {
     #[test]
     fn test_repo_blocks_have_headers() {
         let report = sample_report();
-        let blocks = build_report_blocks(&report);
+        let blocks = build_report_blocks(&report, "alphabetical");
         let repo_header = blocks.iter().find(|b| {
             b["type"] == "header"
                 && b["text"]["text"]
@@ -751,7 +833,7 @@ mod tests {
     #[test]
     fn test_repo_blocks_have_emoji_labels() {
         let report = sample_report();
-        let blocks = build_report_blocks(&report);
+        let blocks = build_report_blocks(&report, "alphabetical");
         let has_done = blocks.iter().any(|b| {
             b["text"]["text"]
                 .as_str()
@@ -833,7 +915,7 @@ mod tests {
             }],
             team_stats: vec![],
         };
-        let blocks = build_report_blocks(&report);
+        let blocks = build_report_blocks(&report, "alphabetical");
         let has_flagged = blocks.iter().any(|b| {
             b["text"]["text"]
                 .as_str()

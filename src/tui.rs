@@ -9,55 +9,16 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Tabs, Wrap},
+    widgets::{Block, Borders, Paragraph, Tabs},
     Terminal, TerminalOptions, Viewport,
 };
 use std::io;
 
 // ========================================================================
-// Report TUI (existing)
+// Report TUI — event loop (state + rendering lives in ceo::tui_app)
 // ========================================================================
 
-pub struct TuiApp {
-    pub report_text: String,
-    pub input: String,
-    pub output_lines: Vec<String>,
-    pub report_scroll: u16,
-    pub should_quit: bool,
-}
-
-impl TuiApp {
-    pub fn new(report_text: String) -> Self {
-        Self {
-            report_text,
-            input: String::new(),
-            output_lines: vec!["Type `help` for commands, `quit` to exit.".to_string()],
-            report_scroll: 0,
-            should_quit: false,
-        }
-    }
-
-    pub fn handle_command(&mut self, cmd: &str) -> Option<String> {
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        match parts.first().copied() {
-            Some("help") => Some(
-                "Commands:\n  refresh  — re-fetch report\n  show #N  — show issue detail\n  \
-                 analyze #N — re-run agent on issue\n  repos — list repos\n  quit — exit"
-                    .to_string(),
-            ),
-            Some("quit") | Some("exit") => {
-                self.should_quit = true;
-                None
-            }
-            Some("repos") => Some("(repos command — not yet wired up)".to_string()),
-            Some("refresh") => Some("(refresh — not yet wired up)".to_string()),
-            Some("show") => Some("(show — not yet wired up)".to_string()),
-            Some("analyze") => Some("(analyze — not yet wired up)".to_string()),
-            Some(other) => Some(format!("Unknown command: {other}. Type `help` for commands.")),
-            None => None,
-        }
-    }
-}
+use ceo::tui_app::TuiApp;
 
 pub fn run_tui(report_text: String) -> Result<()> {
     enable_raw_mode()?;
@@ -69,57 +30,13 @@ pub fn run_tui(report_text: String) -> Result<()> {
     let mut app = TuiApp::new(report_text);
 
     loop {
-        terminal.draw(|frame| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-                .split(frame.area());
-
-            let report_text = Text::raw(&app.report_text);
-            let report_widget = Paragraph::new(report_text)
-                .block(Block::default().borders(Borders::ALL).title(" Report "))
-                .wrap(Wrap { trim: false })
-                .scroll((app.report_scroll, 0));
-            frame.render_widget(report_widget, chunks[0]);
-
-            let mut repl_lines: Vec<Line> = app
-                .output_lines
-                .iter()
-                .map(|l| Line::raw(l.as_str()))
-                .collect();
-            repl_lines.push(Line::styled(
-                format!("> {}_", app.input),
-                Style::default().fg(Color::Green),
-            ));
-            let repl_widget = Paragraph::new(Text::from(repl_lines))
-                .block(Block::default().borders(Borders::ALL).title(" Commands "))
-                .wrap(Wrap { trim: false });
-            frame.render_widget(repl_widget, chunks[1]);
-        })?;
+        terminal.draw(|frame| app.render(frame))?;
 
         if event::poll(std::time::Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
         {
-            match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                KeyCode::Enter => {
-                    let cmd = app.input.clone();
-                    app.input.clear();
-                    app.output_lines.push(format!("> {cmd}"));
-                    if let Some(response) = app.handle_command(&cmd) {
-                        for line in response.lines() {
-                            app.output_lines.push(line.to_string());
-                        }
-                    }
-                    if app.should_quit {
-                        break;
-                    }
-                }
-                KeyCode::Char(c) => app.input.push(c),
-                KeyCode::Backspace => { app.input.pop(); }
-                KeyCode::Up => app.report_scroll = app.report_scroll.saturating_sub(1),
-                KeyCode::Down => app.report_scroll = app.report_scroll.saturating_add(1),
-                _ => {}
+            if app.handle_key(key).should_quit() {
+                break;
             }
         }
     }

@@ -12,3 +12,4 @@ pub mod roadmap;
 pub mod slack;
 pub mod sync;
 pub mod tasks;
+pub mod tui_app;

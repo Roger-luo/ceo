@@ -1,0 +1,19 @@
+---
+source: tests/tui_test.rs
+expression: terminal.backend().to_string()
+---
+"┌ Report ────────────────────────────────────────┐"
+"│Report line 10                                  │"
+"│Report line 11                                  │"
+"│Report line 12                                  │"
+"│Report line 13                                  │"
+"│Report line 14                                  │"
+"│Report line 15                                  │"
+"│Report line 16                                  │"
+"│Report line 17                                  │"
+"│Report line 18                                  │"
+"└────────────────────────────────────────────────┘"
+"┌ Commands ──────────────────────────────────────┐"
+"│Type /help for commands. Press Esc to quit.     │"
+"│>                                               │"
+"└────────────────────────────────────────────────┘"

@@ -103,17 +103,30 @@ impl TuiApp {
             Span::raw(after.to_string()),
         ]));
 
-        // Completion hint line
+        // Completion menu — vertical list, one command per line with description
         if !self.completions.is_empty() {
-            let hints: Vec<Span> = self.completions.iter().enumerate().map(|(i, c)| {
-                let style = if self.completion_idx == Some(i) {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
+            for (i, name) in self.completions.iter().enumerate() {
+                let desc = SLASH_COMMANDS.iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, d)| *d)
+                    .unwrap_or("");
+                let is_selected = self.completion_idx == Some(i);
+                let (name_style, desc_style) = if is_selected {
+                    (
+                        Style::default().fg(Color::Black).bg(Color::Cyan),
+                        Style::default().fg(Color::Black).bg(Color::Cyan),
+                    )
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    (
+                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(Color::DarkGray),
+                    )
                 };
-                Span::styled(format!(" {c} "), style)
-            }).collect();
-            repl_lines.push(Line::from(hints));
+                repl_lines.push(Line::from(vec![
+                    Span::styled(format!("  {name:<12}"), name_style),
+                    Span::styled(format!(" {desc}"), desc_style),
+                ]));
+            }
         }
 
         let repl_widget = Paragraph::new(Text::from(repl_lines))

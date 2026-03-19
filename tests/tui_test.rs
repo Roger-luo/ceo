@@ -336,11 +336,18 @@ fn render_with_scroll() {
 #[test]
 fn render_with_completions() {
     let mut app = TuiApp::new("# Report".to_string());
-    app.input = "/s".to_string();
-    app.input_cursor = 2;
-    app.completions = vec!["/search".to_string()];
-    app.completion_idx = Some(0);
-    let backend = TestBackend::new(50, 15);
+    app.input = "/".to_string();
+    app.input_cursor = 1;
+    // Show all commands as completions
+    app.completions = vec![
+        "/help".to_string(),
+        "/quit".to_string(),
+        "/top".to_string(),
+        "/bottom".to_string(),
+        "/search".to_string(),
+    ];
+    app.completion_idx = Some(1); // /quit selected
+    let backend = TestBackend::new(60, 25);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|frame| app.render(frame)).unwrap();
     insta::assert_snapshot!("tui_completions", terminal.backend().to_string());

@@ -245,15 +245,15 @@ fn build_report_blocks(report: &Report, sort: &str) -> Vec<Value> {
 
     // --- Executive summary + header (bottom = newest in scroll, read first) ---
     blocks.push(divider());
+    blocks.push(header_block(&format!("Project Report — {}", report.date)));
 
     if let Some(summary) = &report.executive_summary {
+        blocks.push(section_block(":memo: *Summary*"));
         let text = convert_markdown(&expand_github_tags(summary, ""));
         for chunk in chunk_text(&text, 3000) {
             blocks.push(section_block(&chunk));
         }
     }
-
-    blocks.push(header_block(&format!("Project Report — {}", report.date)));
 
     // Footer
     blocks.push(context_block(&format!(

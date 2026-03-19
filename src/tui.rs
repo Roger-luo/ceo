@@ -135,11 +135,14 @@ pub fn run_tui(report_text: String) -> Result<()> {
 
 use ceo::config::{
     AgentConfig, ClaudeAgentConfig, CodexAgentConfig, GenericAgentConfig,
-    Config, RepoConfig, TeamMember, ProjectConfig,
+    Config, RepoConfig, TeamMember,
+    TabSpec,
 };
 
 /// A single text field in a form tab.
 struct FormField {
+    /// Config key for `get_field` / `set_field`.
+    key: &'static str,
     label: &'static str,
     value: String,
     placeholder: &'static str,
@@ -192,160 +195,46 @@ struct ConfigEditor {
 
 impl ConfigEditor {
     fn from_config(config: &Config) -> Self {
-        // Agent tab — fields vary by type
-        let agent = TabContent::Form {
-            fields: vec![
-                FormField {
-                    label: "Type",
-                    value: config.agent.agent_type().to_string(),
-                    placeholder: "claude",
-                    options: vec!["claude".into(), "codex".into(), "generic".into()],
-                },
-                FormField { label: "Command", value: config.agent.command().to_string(), placeholder: "claude", options: vec![] },
-                FormField { label: "Timeout (secs)", value: config.agent.timeout_secs().to_string(), placeholder: "120", options: vec![] },
-            ],
-            selected: 0,
-        };
+        let tab_specs = config.ui_tabs();
+        let mut tab_names: Vec<&'static str> = Vec::new();
+        let mut tabs: Vec<TabContent> = Vec::new();
 
-        // Models & Tools tab — build fields based on agent type
-        let model_val = config.agent.model().to_string();
-        let models_map = config.agent.models().cloned().unwrap_or_default();
-        let model_options = model_options_for(config.agent.agent_type());
-        let mut model_fields = vec![
-            FormField {
-                label: "Default model",
-                value: model_val,
-                placeholder: "agent default",
-                options: model_options.clone(),
-            },
-            FormField {
-                label: "Summary model",
-                value: models_map.get("summary").cloned().unwrap_or_default(),
-                placeholder: "(default)",
-                options: model_options.clone(),
-            },
-            FormField {
-                label: "Triage model",
-                value: models_map.get("triage").cloned().unwrap_or_default(),
-                placeholder: "(default)",
-                options: model_options,
-            },
-        ];
-        // Claude-specific fields
-        if let AgentConfig::Claude(c) = &config.agent {
-            model_fields.push(FormField {
-                label: "Summary tools",
-                value: c.tools.get("summary").map(|v| v.join(", ")).unwrap_or_default(),
-                placeholder: "(none)",
-                options: vec![],
-            });
-            model_fields.push(FormField {
-                label: "Triage tools",
-                value: c.tools.get("triage").map(|v| v.join(", ")).unwrap_or_default(),
-                placeholder: "(none)",
-                options: vec![],
-            });
-            model_fields.push(FormField {
-                label: "Effort",
-                value: c.effort.clone(),
-                placeholder: "(none)",
-                options: effort_options(),
-            });
-        }
-        // Codex-specific fields
-        if let AgentConfig::Codex(c) = &config.agent {
-            model_fields.push(FormField {
-                label: "Sandbox",
-                value: c.sandbox.clone(),
-                placeholder: "(none)",
-                options: vec!["".into(), "read-only".into(), "full".into(), "none".into()],
-            });
-            model_fields.push(FormField {
-                label: "Effort",
-                value: c.effort.clone(),
-                placeholder: "(none)",
-                options: effort_options(),
-            });
-        }
-        // Generic-specific fields
-        if let AgentConfig::Generic(c) = &config.agent {
-            model_fields.push(FormField {
-                label: "Args",
-                value: c.args.join(", "),
-                placeholder: "--flag1, --flag2",
-                options: vec![],
-            });
-        }
-        let models = TabContent::Form {
-            fields: model_fields,
-            selected: 0,
-        };
-
-        // Repos tab
-        let repo_items: Vec<ListItem> = config.repos.iter().map(|r| {
-            let labels = if r.labels_required.is_empty() {
-                String::new()
-            } else {
-                r.labels_required.join(", ")
-            };
-            let branches = if r.branches.is_empty() {
-                String::new()
-            } else {
-                r.branches.join(", ")
-            };
-            ListItem {
-                primary: r.name.clone(),
-                details: vec![("Required labels", labels), ("Branches (comma-sep, empty=default)", branches)],
-                enabled: true,
+        for spec in &tab_specs {
+            match spec {
+                TabSpec::Form(ft) => {
+                    tab_names.push(ft.name);
+                    let fields = ft.fields.iter().map(|fs| {
+                        let value = config.get_field(fs.key).unwrap_or_default();
+                        FormField {
+                            key: fs.key,
+                            label: fs.label,
+                            value,
+                            placeholder: fs.placeholder,
+                            options: fs.options.clone(),
+                        }
+                    }).collect();
+                    tabs.push(TabContent::Form { fields, selected: 0 });
+                }
+                TabSpec::List(lt) => {
+                    tab_names.push(lt.name);
+                    let (items, detail_labels) = list_items_from_config(config, lt.name, &lt.detail_labels);
+                    tabs.push(TabContent::List {
+                        items,
+                        selected: 0,
+                        input: String::new(),
+                        input_cursor: 0,
+                        focus_input: false,
+                        detail_labels,
+                        add_placeholder: lt.add_placeholder,
+                    });
+                }
             }
-        }).collect();
-        let repos = TabContent::List {
-            items: repo_items,
-            selected: 0,
-            input: String::new(),
-            input_cursor: 0,
-            focus_input: false,
-            detail_labels: vec!["Required labels", "Branches"],
-            add_placeholder: "org/repo",
-        };
-
-        // Team tab
-        let team_items: Vec<ListItem> = config.team.iter().map(|m| {
-            ListItem {
-                primary: format!("@{}", m.github),
-                details: vec![("Name", m.name.clone()), ("Role", m.role.clone())],
-                enabled: true,
-            }
-        }).collect();
-        let team = TabContent::List {
-            items: team_items,
-            selected: 0,
-            input: String::new(),
-            input_cursor: 0,
-            focus_input: false,
-            detail_labels: vec!["Name", "Role"],
-            add_placeholder: "@username",
-        };
-
-        // Project tab
-        let (org, number) = match &config.project {
-            Some(p) => (p.org.clone(), p.number.to_string()),
-            None => (String::new(), String::new()),
-        };
-        let editor_val = config.editor.clone().unwrap_or_default();
-        let project = TabContent::Form {
-            fields: vec![
-                FormField { label: "Organization", value: org, placeholder: "org-name", options: vec![] },
-                FormField { label: "Project number", value: number, placeholder: "1", options: vec![] },
-                FormField { label: "Editor", value: editor_val, placeholder: "$EDITOR or vi", options: vec![] },
-            ],
-            selected: 0,
-        };
+        }
 
         ConfigEditor {
             active_tab: 0,
-            tab_names: vec!["Agent", "Models", "Repos", "Team", "Project"],
-            tabs: vec![agent, models, repos, team, project],
+            tab_names,
+            tabs,
             mode: Mode::Navigate,
             edit_buffer: String::new(),
             edit_cursor: 0,
@@ -358,139 +247,26 @@ impl ConfigEditor {
     }
 
     fn apply_to_config(&self, config: &mut Config) {
-        // Agent tab — may switch agent type
-        if let TabContent::Form { fields, .. } = &self.tabs[0] {
-            let new_type = &fields[0].value;
-            let command = fields[1].value.clone();
-            let timeout: u64 = fields[2].value.parse().unwrap_or(120);
-
-            // Switch type if changed, preserving what we can
-            if new_type != config.agent.agent_type() {
-                config.agent = match new_type.as_str() {
-                    "codex" => AgentConfig::Codex(CodexAgentConfig {
-                        command,
-                        timeout_secs: timeout,
-                        model: config.agent.model().to_string(),
-                        models: config.agent.models().cloned().unwrap_or_default(),
-                        ..CodexAgentConfig::default()
-                    }),
-                    "generic" => AgentConfig::Generic(GenericAgentConfig {
-                        command,
-                        timeout_secs: timeout,
-                        ..GenericAgentConfig::default()
-                    }),
-                    _ => AgentConfig::Claude(ClaudeAgentConfig {
-                        command,
-                        timeout_secs: timeout,
-                        model: config.agent.model().to_string(),
-                        models: config.agent.models().cloned().unwrap_or_default(),
-                        ..ClaudeAgentConfig::default()
-                    }),
-                };
-            } else {
-                // Same type — just update shared fields
-                match &mut config.agent {
-                    AgentConfig::Claude(c) => { c.command = command; c.timeout_secs = timeout; }
-                    AgentConfig::Codex(c) => { c.command = command; c.timeout_secs = timeout; }
-                    AgentConfig::Generic(c) => { c.command = command; c.timeout_secs = timeout; }
+        for (i, (tab, name)) in self.tabs.iter().zip(self.tab_names.iter()).enumerate() {
+            match tab {
+                TabContent::Form { fields, .. } => {
+                    // Agent type must be set first so downstream keys resolve correctly
+                    if i == 0 {
+                        if let Some(type_field) = fields.iter().find(|f| f.key == "agent.type") {
+                            let _ = config.set_field("agent.type", &type_field.value);
+                        }
+                    }
+                    for field in fields {
+                        if i == 0 && field.key == "agent.type" {
+                            continue; // already handled above
+                        }
+                        let _ = config.set_field(field.key, &field.value);
+                    }
+                }
+                TabContent::List { items, .. } => {
+                    apply_list_to_config(config, name, items);
                 }
             }
-        }
-
-        // Models tab — fields 0-2 are shared, rest are type-specific
-        if let TabContent::Form { fields, .. } = &self.tabs[1] {
-            match &mut config.agent {
-                AgentConfig::Claude(c) => {
-                    c.model = fields[0].value.clone();
-                    set_or_remove_map(&mut c.models, "summary", &fields[1].value);
-                    set_or_remove_map(&mut c.models, "triage", &fields[2].value);
-                    if fields.len() > 3 {
-                        set_or_remove_tools(&mut c.tools, "summary", &fields[3].value);
-                    }
-                    if fields.len() > 4 {
-                        set_or_remove_tools(&mut c.tools, "triage", &fields[4].value);
-                    }
-                    if fields.len() > 5 {
-                        c.effort = fields[5].value.clone();
-                    }
-                }
-                AgentConfig::Codex(c) => {
-                    c.model = fields[0].value.clone();
-                    set_or_remove_map(&mut c.models, "summary", &fields[1].value);
-                    set_or_remove_map(&mut c.models, "triage", &fields[2].value);
-                    if fields.len() > 3 {
-                        c.sandbox = fields[3].value.clone();
-                    }
-                    if fields.len() > 4 {
-                        c.effort = fields[4].value.clone();
-                    }
-                }
-                AgentConfig::Generic(c) => {
-                    if fields.len() > 3 {
-                        c.args = fields[3].value.split(',')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                    }
-                }
-            }
-        }
-
-        // Repos tab
-        if let TabContent::List { items, .. } = &self.tabs[2] {
-            config.repos = items.iter()
-                .filter(|item| item.enabled)
-                .map(|item| {
-                    let labels: Vec<String> = item.details.first()
-                        .map(|(_, v)| v.as_str())
-                        .unwrap_or("")
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    let branches: Vec<String> = item.details.get(1)
-                        .map(|(_, v)| v.as_str())
-                        .unwrap_or("")
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    RepoConfig {
-                        name: item.primary.clone(),
-                        labels_required: labels,
-                        branches,
-                    }
-                })
-                .collect();
-        }
-
-        // Team tab
-        if let TabContent::List { items, .. } = &self.tabs[3] {
-            config.team = items.iter()
-                .filter(|item| item.enabled)
-                .map(|item| {
-                    let github = item.primary.trim_start_matches('@').to_string();
-                    let name = item.details.first().map(|(_, v)| v.clone()).unwrap_or_default();
-                    let role = item.details.get(1).map(|(_, v)| v.clone()).unwrap_or_default();
-                    TeamMember { github, name, role }
-                })
-                .collect();
-        }
-
-        // Project tab
-        if let TabContent::Form { fields, .. } = &self.tabs[4] {
-            let org = fields[0].value.trim().to_string();
-            let number_str = fields[1].value.trim().to_string();
-            if org.is_empty() && number_str.is_empty() {
-                config.project = None;
-            } else {
-                config.project = Some(ProjectConfig {
-                    org,
-                    number: number_str.parse().unwrap_or(0),
-                });
-            }
-            let editor_val = fields[2].value.trim().to_string();
-            config.editor = if editor_val.is_empty() { None } else { Some(editor_val) };
         }
     }
 
@@ -1048,40 +824,47 @@ impl ConfigEditor {
         };
 
         // Preserve shared model values from current Models tab
-        let (model, summary_model, triage_model) = if let TabContent::Form { fields, .. } = &self.tabs[1] {
-            (
-                fields.get(0).map(|f| f.value.clone()).unwrap_or_default(),
-                fields.get(1).map(|f| f.value.clone()).unwrap_or_default(),
-                fields.get(2).map(|f| f.value.clone()).unwrap_or_default(),
-            )
-        } else {
-            (String::new(), String::new(), String::new())
+        let preserved: std::collections::HashMap<&str, String> =
+            if let TabContent::Form { fields, .. } = &self.tabs[1] {
+                fields.iter().map(|f| (f.key, f.value.clone())).collect()
+            } else {
+                std::collections::HashMap::new()
+            };
+
+        // Build a temporary config of the new agent type to get the schema
+        let tmp_agent: AgentConfig = match agent_type.as_str() {
+            "codex" => AgentConfig::Codex(CodexAgentConfig::default()),
+            "generic" => AgentConfig::Generic(GenericAgentConfig::default()),
+            _ => AgentConfig::Claude(ClaudeAgentConfig::default()),
+        };
+        let tmp_config = Config {
+            agent: tmp_agent,
+            repos: vec![],
+            team: vec![],
+            project: None,
+            editor: None,
+            summary_length: None,
+            batch_size: None,
+            concurrency: None,
+            slack: None,
         };
 
-        let mopts = model_options_for(&agent_type);
-        let mut fields = vec![
-            FormField { label: "Default model", value: model, placeholder: "agent default", options: mopts.clone() },
-            FormField { label: "Summary model", value: summary_model, placeholder: "(default)", options: mopts.clone() },
-            FormField { label: "Triage model", value: triage_model, placeholder: "(default)", options: mopts },
-        ];
-
-        match agent_type.as_str() {
-            "claude" => {
-                fields.push(FormField { label: "Summary tools", value: String::new(), placeholder: "(none)", options: vec![] });
-                fields.push(FormField { label: "Triage tools", value: String::new(), placeholder: "(none)", options: vec![] });
-                fields.push(FormField { label: "Effort", value: String::new(), placeholder: "(none)", options: effort_options() });
-            }
-            "codex" => {
-                fields.push(FormField { label: "Sandbox", value: String::new(), placeholder: "(none)", options: vec!["".into(), "read-only".into(), "full".into(), "none".into()] });
-                fields.push(FormField { label: "Effort", value: String::new(), placeholder: "(none)", options: effort_options() });
-            }
-            "generic" => {
-                fields.push(FormField { label: "Args", value: String::new(), placeholder: "--flag1, --flag2", options: vec![] });
-            }
-            _ => {}
+        // Find the Models tab spec from the schema
+        let tab_specs = tmp_config.ui_tabs();
+        let models_spec = tab_specs.iter().find(|t| matches!(t, TabSpec::Form(ft) if ft.name == "Models"));
+        if let Some(TabSpec::Form(ft)) = models_spec {
+            let fields = ft.fields.iter().map(|fs| {
+                let value = preserved.get(fs.key).cloned().unwrap_or_default();
+                FormField {
+                    key: fs.key,
+                    label: fs.label,
+                    value,
+                    placeholder: fs.placeholder,
+                    options: fs.options.clone(),
+                }
+            }).collect();
+            self.tabs[1] = TabContent::Form { fields, selected: 0 };
         }
-
-        self.tabs[1] = TabContent::Form { fields, selected: 0 };
     }
 
     fn commit_edit(&mut self) {
@@ -1156,15 +939,6 @@ impl ConfigEditor {
     }
 }
 
-fn set_or_remove_map(map: &mut std::collections::HashMap<String, String>, key: &str, value: &str) {
-    let v = value.trim();
-    if v.is_empty() {
-        map.remove(key);
-    } else {
-        map.insert(key.to_string(), v.to_string());
-    }
-}
-
 /// Split a string at cursor position into (before, cursor_char, after).
 /// If cursor is at the end, cursor_char is " " (visible block cursor).
 fn split_at_cursor(s: &str, cursor: usize) -> (String, String, String) {
@@ -1178,37 +952,71 @@ fn split_at_cursor(s: &str, cursor: usize) -> (String, String, String) {
     }
 }
 
-fn model_options_for(agent_type: &str) -> Vec<String> {
-    match agent_type {
-        "claude" => vec!["".into(), "haiku".into(), "sonnet".into(), "opus".into()],
-        "codex" => vec![
-            "".into(),
-            "gpt-5.3-codex".into(),
-            "gpt-5.4".into(),
-            "gpt-5.2-codex".into(),
-            "gpt-5.1-codex-max".into(),
-            "gpt-5.2".into(),
-            "gpt-5.1-codex-mini".into(),
-        ],
-        _ => vec![],
+/// Build list items from the config for a named list tab.
+fn list_items_from_config(config: &Config, tab_name: &str, detail_labels: &[&'static str]) -> (Vec<ListItem>, Vec<&'static str>) {
+    match tab_name {
+        "Repos" => {
+            let items = config.repos.iter().map(|r| {
+                let labels = r.labels_required.join(", ");
+                let branches = r.branches.join(", ");
+                ListItem {
+                    primary: r.name.clone(),
+                    details: detail_labels.iter().zip([labels, branches])
+                        .map(|(l, v)| (*l, v))
+                        .collect(),
+                    enabled: true,
+                }
+            }).collect();
+            (items, detail_labels.to_vec())
+        }
+        "Team" => {
+            let items = config.team.iter().map(|m| {
+                ListItem {
+                    primary: format!("@{}", m.github),
+                    details: detail_labels.iter().zip([m.name.clone(), m.role.clone()])
+                        .map(|(l, v)| (*l, v))
+                        .collect(),
+                    enabled: true,
+                }
+            }).collect();
+            (items, detail_labels.to_vec())
+        }
+        _ => (vec![], detail_labels.to_vec()),
     }
 }
 
-fn effort_options() -> Vec<String> {
-    vec!["".into(), "low".into(), "medium".into(), "high".into()]
-}
-
-fn set_or_remove_tools(map: &mut std::collections::HashMap<String, Vec<String>>, key: &str, value: &str) {
-    let tools: Vec<String> = value.split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if tools.is_empty() {
-        map.remove(key);
-    } else {
-        map.insert(key.to_string(), tools);
+/// Apply list tab items back to the config.
+fn apply_list_to_config(config: &mut Config, tab_name: &str, items: &[ListItem]) {
+    match tab_name {
+        "Repos" => {
+            config.repos = items.iter()
+                .filter(|item| item.enabled)
+                .map(|item| {
+                    let labels: Vec<String> = item.details.first()
+                        .map(|(_, v)| v.as_str()).unwrap_or("")
+                        .split(',').map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()).collect();
+                    let branches: Vec<String> = item.details.get(1)
+                        .map(|(_, v)| v.as_str()).unwrap_or("")
+                        .split(',').map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()).collect();
+                    RepoConfig { name: item.primary.clone(), labels_required: labels, branches }
+                }).collect();
+        }
+        "Team" => {
+            config.team = items.iter()
+                .filter(|item| item.enabled)
+                .map(|item| {
+                    let github = item.primary.trim_start_matches('@').to_string();
+                    let name = item.details.first().map(|(_, v)| v.clone()).unwrap_or_default();
+                    let role = item.details.get(1).map(|(_, v)| v.clone()).unwrap_or_default();
+                    TeamMember { github, name, role }
+                }).collect();
+        }
+        _ => {}
     }
 }
+
 
 /// Run the inline tabbed config editor. Modifies config in place.
 pub fn run_config_editor(config: &mut Config) -> Result<()> {

@@ -366,3 +366,51 @@ name = "org/repo"
     assert_eq!(config.get_field("project.number").unwrap(), "3");
     assert_eq!(config.project.unwrap().number, 3);
 }
+
+/// Verify every FormFieldSpec key in ui_tabs() is a valid get_field/set_field key.
+/// This catches drift between the UI schema and the config accessors at test time.
+#[test]
+fn ui_tab_field_keys_are_valid_get_and_set_keys() {
+    use ceo::config::TabSpec;
+
+    // Test with each agent type since the Models tab varies
+    for agent_type in ["claude", "codex", "generic"] {
+        let mut config = Config::load_from_str(r#"
+[[repos]]
+name = "org/repo"
+"#).unwrap();
+        config.set_field("agent.type", agent_type).unwrap();
+
+        for tab in config.ui_tabs() {
+            if let TabSpec::Form(ft) = tab {
+                for field in &ft.fields {
+                    // get_field should not return UnknownKey — it may return a "not configured"
+                    // error for optional fields, which is fine.
+                    let result = config.get_field(field.key);
+                    if let Err(e) = &result {
+                        let msg = format!("{e}");
+                        assert!(
+                            !msg.contains("Unknown config key"),
+                            "ui_tabs() field key {:?} (tab {:?}, agent type {:?}) is not \
+                             recognized by get_field: {msg}",
+                            field.key, ft.name, agent_type,
+                        );
+                    }
+
+                    // set_field should accept the key (use current value or empty string)
+                    let value = result.unwrap_or_default();
+                    let set_result = config.set_field(field.key, &value);
+                    if let Err(e) = &set_result {
+                        let msg = format!("{e}");
+                        assert!(
+                            !msg.contains("Unknown config key"),
+                            "ui_tabs() field key {:?} (tab {:?}, agent type {:?}) is not \
+                             recognized by set_field: {msg}",
+                            field.key, ft.name, agent_type,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

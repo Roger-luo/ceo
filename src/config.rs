@@ -446,18 +446,18 @@ impl Config {
             "summary_length" => Ok(self.summary_length.clone().unwrap_or_default()),
             "batch_size" => Ok(self.batch_size().to_string()),
             "concurrency" => Ok(self.concurrency().to_string()),
-            "project.org" => self.project.as_ref()
+            "project.org" => Ok(self.project.as_ref()
                 .map(|p| p.org.clone())
-                .ok_or_else(|| ConfigError::UnknownKey("project.org (not configured)".to_string())),
-            "project.number" => self.project.as_ref()
-                .map(|p| p.number.to_string())
-                .ok_or_else(|| ConfigError::UnknownKey("project.number (not configured)".to_string())),
-            "slack.webhook_url" => self.slack.as_ref()
+                .unwrap_or_default()),
+            "project.number" => Ok(self.project.as_ref()
+                .map(|p| if p.number == 0 { String::new() } else { p.number.to_string() })
+                .unwrap_or_default()),
+            "slack.webhook_url" => Ok(self.slack.as_ref()
                 .and_then(|s| s.webhook_url.clone())
-                .ok_or_else(|| ConfigError::UnknownKey("slack.webhook_url (not configured)".to_string())),
-            "slack.channel" => self.slack.as_ref()
+                .unwrap_or_default()),
+            "slack.channel" => Ok(self.slack.as_ref()
                 .and_then(|s| s.channel.clone())
-                .ok_or_else(|| ConfigError::UnknownKey("slack.channel (not configured)".to_string())),
+                .unwrap_or_default()),
             _ => Err(ConfigError::UnknownKey(key.to_string())),
         }
     }
@@ -663,6 +663,99 @@ impl Config {
         self.concurrency.unwrap_or(4)
     }
 
+    /// Returns the UI tab schema for the interactive config editor.
+    ///
+    /// This is the **single source of truth** for which config fields appear in the
+    /// TUI. Each `FormFieldSpec::key` maps directly to `get_field` / `set_field`,
+    /// guaranteeing the panel and the config file stay in sync.
+    pub fn ui_tabs(&self) -> Vec<TabSpec> {
+        let mut tabs = vec![];
+
+        // ── Agent ──────────────────────────────────────────
+        tabs.push(TabSpec::Form(FormTab {
+            name: "Agent",
+            fields: vec![
+                FormFieldSpec {
+                    key: "agent.type",
+                    label: "Type",
+                    placeholder: "claude",
+                    options: vec!["claude".into(), "codex".into(), "generic".into()],
+                },
+                FormFieldSpec {
+                    key: "agent.command",
+                    label: "Command",
+                    placeholder: "claude",
+                    options: vec![],
+                },
+                FormFieldSpec {
+                    key: "agent.timeout_secs",
+                    label: "Timeout (secs)",
+                    placeholder: "120",
+                    options: vec![],
+                },
+            ],
+        }));
+
+        // ── Models & Tools (dynamic by agent type) ─────────
+        let model_opts = model_options_for(self.agent.agent_type());
+        let mut mf = Vec::new();
+        if !matches!(&self.agent, AgentConfig::Generic(_)) {
+            mf.push(FormFieldSpec { key: "agent.model", label: "Default model", placeholder: "agent default", options: model_opts.clone() });
+            mf.push(FormFieldSpec { key: "agent.models.summary", label: "Summary model", placeholder: "(default)", options: model_opts.clone() });
+            mf.push(FormFieldSpec { key: "agent.models.triage", label: "Triage model", placeholder: "(default)", options: model_opts });
+        }
+        match &self.agent {
+            AgentConfig::Claude(_) => {
+                mf.push(FormFieldSpec { key: "agent.tools.summary", label: "Summary tools", placeholder: "(none)", options: vec![] });
+                mf.push(FormFieldSpec { key: "agent.tools.triage", label: "Triage tools", placeholder: "(none)", options: vec![] });
+                mf.push(FormFieldSpec { key: "agent.effort", label: "Effort", placeholder: "(none)", options: effort_options() });
+            }
+            AgentConfig::Codex(_) => {
+                mf.push(FormFieldSpec { key: "agent.sandbox", label: "Sandbox", placeholder: "(none)", options: vec!["".into(), "read-only".into(), "full".into(), "none".into()] });
+                mf.push(FormFieldSpec { key: "agent.effort", label: "Effort", placeholder: "(none)", options: effort_options() });
+            }
+            AgentConfig::Generic(_) => {
+                mf.push(FormFieldSpec { key: "agent.args", label: "Args", placeholder: "--flag1, --flag2", options: vec![] });
+            }
+        }
+        tabs.push(TabSpec::Form(FormTab { name: "Models", fields: mf }));
+
+        // ── Repos (list) ───────────────────────────────────
+        tabs.push(TabSpec::List(ListTab {
+            name: "Repos",
+            add_placeholder: "org/repo",
+            detail_labels: vec!["Required labels", "Branches (comma-sep, empty=default)"],
+        }));
+
+        // ── Team (list) ────────────────────────────────────
+        tabs.push(TabSpec::List(ListTab {
+            name: "Team",
+            add_placeholder: "@username",
+            detail_labels: vec!["Name", "Role"],
+        }));
+
+        // ── Project ────────────────────────────────────────
+        tabs.push(TabSpec::Form(FormTab {
+            name: "Project",
+            fields: vec![
+                FormFieldSpec { key: "project.org", label: "Organization", placeholder: "org-name", options: vec![] },
+                FormFieldSpec { key: "project.number", label: "Project number", placeholder: "1", options: vec![] },
+                FormFieldSpec { key: "editor", label: "Editor", placeholder: "$EDITOR or vi", options: vec![] },
+            ],
+        }));
+
+        // ── Slack ──────────────────────────────────────────
+        tabs.push(TabSpec::Form(FormTab {
+            name: "Slack",
+            fields: vec![
+                FormFieldSpec { key: "slack.webhook_url", label: "Webhook URL", placeholder: "https://hooks.slack.com/services/...", options: vec![] },
+                FormFieldSpec { key: "slack.channel", label: "Channel", placeholder: "(webhook default)", options: vec![] },
+            ],
+        }));
+
+        tabs
+    }
+
     fn find_config_path() -> Option<PathBuf> {
         // 1. $CEO_CONFIG
         if let Ok(env_path) = std::env::var("CEO_CONFIG") {
@@ -688,4 +781,59 @@ impl Config {
 
         None
     }
+}
+
+// ========================================================================
+// UI schema types — shared between config.rs and tui.rs
+// ========================================================================
+
+/// A single field in a config form tab.
+pub struct FormFieldSpec {
+    /// Key for `get_field` / `set_field` — the canonical config path.
+    pub key: &'static str,
+    /// Human-readable label shown in the TUI.
+    pub label: &'static str,
+    /// Placeholder shown when value is empty.
+    pub placeholder: &'static str,
+    /// If non-empty, the field cycles through these options instead of free text.
+    pub options: Vec<String>,
+}
+
+/// A form-based tab (key-value fields).
+pub struct FormTab {
+    pub name: &'static str,
+    pub fields: Vec<FormFieldSpec>,
+}
+
+/// A list-based tab (repos or team members).
+pub struct ListTab {
+    pub name: &'static str,
+    pub add_placeholder: &'static str,
+    pub detail_labels: Vec<&'static str>,
+}
+
+/// A tab in the config editor — either a form or a list.
+pub enum TabSpec {
+    Form(FormTab),
+    List(ListTab),
+}
+
+pub fn model_options_for(agent_type: &str) -> Vec<String> {
+    match agent_type {
+        "claude" => vec!["".into(), "haiku".into(), "sonnet".into(), "opus".into()],
+        "codex" => vec![
+            "".into(),
+            "gpt-5.3-codex".into(),
+            "gpt-5.4".into(),
+            "gpt-5.2-codex".into(),
+            "gpt-5.1-codex-max".into(),
+            "gpt-5.2".into(),
+            "gpt-5.1-codex-mini".into(),
+        ],
+        _ => vec![],
+    }
+}
+
+pub fn effort_options() -> Vec<String> {
+    vec!["".into(), "low".into(), "medium".into(), "high".into()]
 }

@@ -78,7 +78,7 @@ expression: value
     },
     {
       "text": {
-        "text": "*Highlights*\n• Dark mode shipped on frontend (<https://github.com/org/frontend/pull/10|org/frontend#10>) by <https://github.com/alice|@alice>\n• Backend v2.0 API released (<https://github.com/org/backend/pull/50|org/backend#50>)\n\n*Risks*\n• Rate-limit bug (<https://github.com/org/backend/issues/55|org/backend#55>) may impact production\n• Accessibility PR (<https://github.com/org/frontend/pull/13|org/frontend#13>) needs review\n\n*Outlook*\nTeam velocity is strong. Focus next week on org/frontend#14 perf audit.",
+        "text": "*Highlights*\n• Dark mode shipped on frontend (<https://github.com/org/frontend/pull/10|frontend#10>) by <https://github.com/alice|@alice>\n• Backend v2.0 API released (<https://github.com/org/backend/pull/50|backend#50>)\n\n*Risks*\n• Rate-limit bug (<https://github.com/org/backend/issues/55|backend#55>) may impact production\n• Accessibility PR (<https://github.com/org/frontend/pull/13|frontend#13>) needs review\n\n*Outlook*\nTeam velocity is strong. Focus next week on frontend#14 perf audit.",
         "type": "mrkdwn"
       },
       "type": "section"

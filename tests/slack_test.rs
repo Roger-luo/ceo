@@ -38,15 +38,15 @@ both merged by @alice.</done>
             {
                 Ok("\
 ## Highlights
-- Dark mode shipped on frontend (org/frontend#10) by @alice
-- Backend v2.0 API released (org/backend#50)
+- Dark mode shipped on frontend (frontend#10) by @alice
+- Backend v2.0 API released (backend#50)
 
 ## Risks
-- Rate-limit bug (org/backend#55) may impact production
-- Accessibility PR (org/frontend#13) needs review
+- Rate-limit bug (backend#55) may impact production
+- Accessibility PR (frontend#13) needs review
 
 ## Outlook
-Team velocity is strong. Focus next week on org/frontend#14 perf audit."
+Team velocity is strong. Focus next week on frontend#14 perf audit."
                     .to_string())
             } else {
                 Ok("Summary of this issue.".to_string())

@@ -115,16 +115,18 @@ pub struct Report {
     pub refs: RefLookup,
 }
 
-/// Lookup table for resolving bare `#N`, `org/repo#N`, and `@user` references
-/// into full GitHub links.
+/// Lookup table for resolving bare `#N`, `repo#N`, `org/repo#N`, and `@user`
+/// references into full GitHub links.
 #[derive(Default)]
 pub struct RefLookup {
-    /// (repo, number) → "issue" or "pr"
+    /// (full_repo, number) → "issue" or "pr"
     pub issues: HashMap<(String, u64), String>,
     /// Set of known GitHub handles (lowercase)
     pub users: HashSet<String>,
-    /// All repo names in the config (for resolving bare #N in repo context)
+    /// All full repo names (e.g. "QuEraComputing/bloqade-lanes")
     pub repos: Vec<String>,
+    /// Short repo name → full repo name (e.g. "bloqade-lanes" → "QuEraComputing/bloqade-lanes")
+    pub short_to_full: HashMap<String, String>,
 }
 
 impl RefLookup {
@@ -133,8 +135,13 @@ impl RefLookup {
         let mut issues = HashMap::new();
         let mut users = HashSet::new();
         let repos: Vec<String> = rows.keys().cloned().collect();
+        let mut short_to_full = HashMap::new();
 
         for (repo, repo_rows) in rows {
+            // Map short name → full name (e.g. "bloqade-lanes" → "QuEraComputing/bloqade-lanes")
+            if let Some(short) = repo.split('/').last() {
+                short_to_full.insert(short.to_string(), repo.clone());
+            }
             for row in repo_rows {
                 issues.insert((repo.clone(), row.number), row.kind.clone());
                 if let Some(author) = &row.author {
@@ -149,7 +156,17 @@ impl RefLookup {
             }
         }
 
-        Self { issues, users, repos }
+        Self { issues, users, repos, short_to_full }
+    }
+
+    /// Resolve a repo reference (short or full) to the full "org/repo" name.
+    fn resolve_repo(&self, name: &str) -> Option<&str> {
+        // Already a full name?
+        if self.repos.iter().any(|r| r == name) {
+            return Some(self.repos.iter().find(|r| r.as_str() == name).unwrap());
+        }
+        // Try short name
+        self.short_to_full.get(name).map(|s| s.as_str())
     }
 }
 
@@ -160,6 +177,10 @@ impl RefLookup {
 /// When `repo_context` is non-empty, bare `#N` resolves against that repo.
 /// When empty, all configured repos are searched (first match wins).
 pub fn linkify(text: &str, refs: &RefLookup, repo_context: &str) -> String {
+    // Pre-pass: strip XML tags from old cached summaries into natural syntax.
+    // <gh>handle</gh> → @handle, <issue>N</issue> → #N, <pr>N</pr> → #N
+    let text = strip_xml_tags(text);
+
     let mut result = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
@@ -220,6 +241,32 @@ pub fn linkify(text: &str, refs: &RefLookup, repo_context: &str) -> String {
     result
 }
 
+/// Strip XML reference tags from old cached summaries into natural syntax.
+/// `<gh>handle</gh>` → `@handle`, `<issue>N</issue>` → `#N`, `<pr>N</pr>` → `#N`
+fn strip_xml_tags(text: &str) -> String {
+    let mut result = text.to_string();
+    for (open, close, prefix) in [
+        ("<gh>", "</gh>", "@"),
+        ("<issue>", "</issue>", "#"),
+        ("<pr>", "</pr>", "#"),
+    ] {
+        loop {
+            let Some(start) = result.find(open) else { break };
+            let after_open = start + open.len();
+            let Some(end_offset) = result[after_open..].find(close) else { break };
+            let inner = result[after_open..after_open + end_offset].trim().to_string();
+            // If inner already has # (like "org/repo#42"), keep as-is; otherwise add prefix
+            let replacement = if inner.contains('#') || prefix == "@" {
+                format!("{prefix}{inner}")
+            } else {
+                format!("{prefix}{inner}")
+            };
+            result.replace_range(start..after_open + end_offset + close.len(), &replacement);
+        }
+    }
+    result
+}
+
 /// Find the end of a markdown link `[text](url)` starting at `[`.
 fn find_markdown_link_end(chars: &[char], start: usize) -> Option<usize> {
     let mut j = start + 1;
@@ -253,24 +300,33 @@ fn find_angle_link_end(chars: &[char], start: usize) -> Option<usize> {
     if j < chars.len() && (has_pipe || has_http) { Some(j) } else { None }
 }
 
-/// Try to parse `org/repo#N` at position `i`.
+/// Try to parse `repo#N` or `org/repo#N` at position `i`.
 fn try_qualified_ref(chars: &[char], i: usize, refs: &RefLookup) -> Option<(String, usize)> {
-    // Scan for pattern: word/word#digits
+    // Scan for pattern: word#digits or word/word#digits
     let mut j = i;
-    // owner part
+    // First word part (could be owner or short repo name)
     while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '-' || chars[j] == '_' || chars[j] == '.') {
         j += 1;
     }
-    if j >= chars.len() || chars[j] != '/' { return None; }
-    let _slash = j;
-    j += 1;
-    // repo part
-    while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '-' || chars[j] == '_' || chars[j] == '.') {
+    if j >= chars.len() { return None; }
+
+    let hash;
+    if chars[j] == '/' {
+        // org/repo#N pattern
         j += 1;
+        while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '-' || chars[j] == '_' || chars[j] == '.') {
+            j += 1;
+        }
+        if j >= chars.len() || chars[j] != '#' { return None; }
+        hash = j;
+    } else if chars[j] == '#' {
+        // repo#N pattern (short name)
+        hash = j;
+    } else {
+        return None;
     }
-    if j >= chars.len() || chars[j] != '#' { return None; }
-    let hash = j;
-    j += 1;
+
+    j = hash + 1;
     // number part
     let num_start = j;
     while j < chars.len() && chars[j].is_ascii_digit() {
@@ -278,14 +334,17 @@ fn try_qualified_ref(chars: &[char], i: usize, refs: &RefLookup) -> Option<(Stri
     }
     if j == num_start { return None; }
 
-    let repo: String = chars[i..hash].iter().collect();
+    let ref_text: String = chars[i..hash].iter().collect();
     let num_str: String = chars[num_start..j].iter().collect();
     let number: u64 = num_str.parse().ok()?;
 
-    let kind = refs.issues.get(&(repo.clone(), number))?;
+    // Resolve the repo name — could be "org/repo" or just "repo"
+    let full_repo = refs.resolve_repo(&ref_text)?;
+
+    let kind = refs.issues.get(&(full_repo.to_string(), number))?;
     let path = if kind == "pr" { "pull" } else { "issues" };
     let display: String = chars[i..j].iter().collect();
-    Some((format!("[{display}](https://github.com/{repo}/{path}/{number})"), j - i))
+    Some((format!("[{display}](https://github.com/{full_repo}/{path}/{number})"), j - i))
 }
 
 /// Try to parse bare `#N` at position `i`.
@@ -465,6 +524,9 @@ mod tests {
         refs.users.insert("alice".into());
         refs.users.insert("bob".into());
         refs.repos = vec!["org/repo".into(), "acme/frontend".into(), "acme/backend".into()];
+        refs.short_to_full.insert("repo".into(), "org/repo".into());
+        refs.short_to_full.insert("frontend".into(), "acme/frontend".into());
+        refs.short_to_full.insert("backend".into(), "acme/backend".into());
         refs
     }
 
@@ -534,6 +596,38 @@ mod tests {
         assert!(result.contains("[@alice](https://github.com/alice)"));
         assert!(result.contains("[org/repo#42](https://github.com/org/repo/pull/42)"));
         assert!(result.contains("[#55](https://github.com/org/repo/issues/55)"));
+    }
+
+    #[test]
+    fn linkify_short_repo_name() {
+        let refs = test_refs();
+        let result = linkify("See backend#50 for details", &refs, "");
+        assert_eq!(result, "See [backend#50](https://github.com/acme/backend/pull/50) for details");
+    }
+
+    #[test]
+    fn linkify_short_repo_in_sentence() {
+        let refs = test_refs();
+        let result = linkify("frontend#15 needs triage, backend#50 is done", &refs, "");
+        assert!(result.contains("[frontend#15](https://github.com/acme/frontend/issues/15)"));
+        assert!(result.contains("[backend#50](https://github.com/acme/backend/pull/50)"));
+    }
+
+    #[test]
+    fn linkify_xml_tags_backward_compat() {
+        let refs = test_refs();
+        let result = linkify("<gh>alice</gh> fixed <pr>42</pr> and <issue>55</issue>", &refs, "org/repo");
+        assert!(result.contains("[@alice](https://github.com/alice)"));
+        assert!(result.contains("[#42](https://github.com/org/repo/pull/42)"));
+        assert!(result.contains("[#55](https://github.com/org/repo/issues/55)"));
+    }
+
+    #[test]
+    fn linkify_xml_tags_with_qualified_refs() {
+        let refs = test_refs();
+        let result = linkify("<pr>acme/backend#50</pr>", &refs, "");
+        // XML stripped to #acme/backend#50, then qualified ref resolves it
+        assert!(result.contains("[acme/backend#50](https://github.com/acme/backend/pull/50)"));
     }
 
     // Keep expand_github_tags tests for backward compat with cached summaries

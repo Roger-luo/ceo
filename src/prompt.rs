@@ -229,8 +229,16 @@ impl Prompt for ExecutiveSummaryPrompt {
             "{}\n\n\
              All information you need is provided below — do NOT fetch external data.\n\
              Since you are summarizing across multiple repos, ALWAYS qualify issue/PR \
-             references with the repo name, e.g. org/repo#42.\n\
-             Use @handle for users.\n\n\
+             references with the short repo name: repo-name#N (NOT org/repo-name#N).\n\
+             Use @handle for GitHub users.\n\n\
+             Examples of correct references:\n\
+             - bloqade-lanes#264 (short repo name + number)\n\
+             - @alice (GitHub handle)\n\
+             - kirin#621 and kirin#622 (multiple refs to same repo)\n\n\
+             Do NOT use:\n\
+             - QuEraComputing/bloqade-lanes#264 (no org prefix)\n\
+             - #264 alone (ambiguous across repos)\n\
+             - <pr>264</pr> or <issue>264</issue> (no XML tags)\n\n\
              Per-repo summaries:\n{}",
             self.template, self.repo_summaries
         )

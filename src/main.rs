@@ -32,6 +32,9 @@ enum Commands {
         /// Send report to Slack (requires $CEO_SLACK_WEBHOOK)
         #[arg(long)]
         slack: bool,
+        /// Print the Slack JSON payload without sending (for debugging)
+        #[arg(long)]
+        slack_dry_run: bool,
     },
     /// Launch interactive TUI mode
     Interactive,
@@ -132,7 +135,7 @@ async fn main() -> Result<()> {
     let is_self_cmd = matches!(cli.command, Commands::Self_ { .. });
 
     let result = match cli.command {
-        Commands::Report { days, month, template, slack } => cmd_report(days, month, template, slack).await,
+        Commands::Report { days, month, template, slack, slack_dry_run } => cmd_report(days, month, template, slack, slack_dry_run).await,
         Commands::Interactive => cmd_interactive().await,
         Commands::Sync => cmd_sync(),
         Commands::ClearCache => cmd_clear_cache(),
@@ -281,7 +284,7 @@ fn resolve_date_range(days: i64, month: Option<String>) -> Result<(String, Strin
     }
 }
 
-async fn cmd_report(days: i64, month: Option<String>, template: Option<String>, slack: bool) -> Result<()> {
+async fn cmd_report(days: i64, month: Option<String>, template: Option<String>, slack: bool, slack_dry_run: bool) -> Result<()> {
     let config = ceo::config::Config::load()?;
     let conn = ceo::db::open_existing_db()?;
     let agent = ceo::agent::AgentKind::from_config(&config.agent);
@@ -291,7 +294,10 @@ async fn cmd_report(days: i64, month: Option<String>, template: Option<String>, 
     let report_data = ceo::pipeline::run_pipeline(&config, &conn, &agent, &since, &label, &progress, template.as_deref()).await?;
     let markdown = ceo::report::render_markdown(&report_data);
 
-    if slack {
+    if slack_dry_run {
+        let json = ceo::slack::dry_run(&report_data, config.slack.as_ref());
+        println!("{json}");
+    } else if slack {
         ceo::slack::send_report(&report_data, &markdown, config.slack.as_ref()).await?;
         eprintln!("Report sent to Slack.");
     } else {

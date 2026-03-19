@@ -61,6 +61,16 @@ pub async fn send_report(
     }
 }
 
+/// Return the Slack JSON payload as a pretty-printed string without sending.
+pub fn dry_run(report: &Report, slack_config: Option<&SlackConfig>) -> String {
+    let sort = slack_config
+        .and_then(|c| c.sort.as_deref())
+        .unwrap_or("alphabetical");
+    let blocks = build_report_blocks(report, sort);
+    let payload = json!({ "blocks": blocks });
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| format!("{payload}"))
+}
+
 // ============================================================================
 // Webhook path: single well-formatted message
 // ============================================================================

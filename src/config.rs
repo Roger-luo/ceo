@@ -29,6 +29,9 @@ pub struct Config {
     /// Maximum number of concurrent agent calls. Default: 4.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<usize>,
+    /// Slack integration settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slack: Option<SlackConfig>,
 }
 
 // --- Per-agent-type config structs ---
@@ -338,6 +341,17 @@ pub struct ProjectConfig {
     pub number: u64,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SlackConfig {
+    /// Incoming webhook URL. Can also be set via $CEO_SLACK_WEBHOOK (env var takes precedence).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_url: Option<String>,
+    /// Optional channel override (e.g. "#engineering-updates").
+    /// If omitted, the webhook's default channel is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+}
+
 impl Config {
     /// Parse a TOML string into a Config.
     pub fn load_from_str(s: &str) -> Result<Self> {
@@ -438,6 +452,12 @@ impl Config {
             "project.number" => self.project.as_ref()
                 .map(|p| p.number.to_string())
                 .ok_or_else(|| ConfigError::UnknownKey("project.number (not configured)".to_string())),
+            "slack.webhook_url" => self.slack.as_ref()
+                .and_then(|s| s.webhook_url.clone())
+                .ok_or_else(|| ConfigError::UnknownKey("slack.webhook_url (not configured)".to_string())),
+            "slack.channel" => self.slack.as_ref()
+                .and_then(|s| s.channel.clone())
+                .ok_or_else(|| ConfigError::UnknownKey("slack.channel (not configured)".to_string())),
             _ => Err(ConfigError::UnknownKey(key.to_string())),
         }
     }
@@ -599,6 +619,22 @@ impl Config {
                     message: format!("expected positive integer, got: {value}"),
                 })?;
                 self.concurrency = if n == 4 { None } else { Some(n) };
+            }
+            "slack.webhook_url" => {
+                let url = if value.is_empty() { None } else { Some(value.to_string()) };
+                if let Some(ref mut s) = self.slack {
+                    s.webhook_url = url;
+                } else {
+                    self.slack = Some(SlackConfig { webhook_url: url, channel: None });
+                }
+            }
+            "slack.channel" => {
+                let channel = if value.is_empty() { None } else { Some(value.to_string()) };
+                if let Some(ref mut s) = self.slack {
+                    s.channel = channel;
+                } else {
+                    self.slack = Some(SlackConfig { webhook_url: None, channel });
+                }
             }
             _ => return Err(ConfigError::UnknownKey(key.to_string())),
         }

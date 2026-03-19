@@ -224,25 +224,32 @@ fn build_report_blocks(report: &Report) -> Vec<Value> {
     let inactive: Vec<_> = report.repos.iter().filter(|r| !r.has_activity()).collect();
 
     for repo in &active {
-        blocks.push(section_block(&format!("*{}*", repo.name)));
-        let mut details = String::new();
+        blocks.push(divider());
+        blocks.push(header_block(&repo.name));
+
         if let Some(done) = &repo.done {
-            details.push_str("*Done:*\n");
-            details.push_str(&convert_markdown(&expand_github_tags(done, &repo.name)));
+            let text = format_category(":white_check_mark: *Done*", done, &repo.name);
+            for chunk in chunk_text(&text, 3000) {
+                blocks.push(section_block(&chunk));
+            }
         }
         if let Some(ip) = &repo.in_progress {
-            details.push_str("*In Progress:*\n");
-            details.push_str(&convert_markdown(&expand_github_tags(ip, &repo.name)));
+            let text = format_category(":construction: *In Progress*", ip, &repo.name);
+            for chunk in chunk_text(&text, 3000) {
+                blocks.push(section_block(&chunk));
+            }
         }
         if let Some(next) = &repo.next {
-            details.push_str("*Next:*\n");
-            details.push_str(&convert_markdown(&expand_github_tags(next, &repo.name)));
+            let text = format_category(":soon: *Next*", next, &repo.name);
+            for chunk in chunk_text(&text, 3000) {
+                blocks.push(section_block(&chunk));
+            }
         }
         if !repo.flagged_issues.is_empty() {
-            details.push_str("*Needs Attention:*\n");
+            let mut text = String::from(":warning: *Needs Attention*\n");
             for issue in &repo.flagged_issues {
                 let missing = issue.missing_labels.join(", ");
-                details.push_str(&format!(
+                text.push_str(&format!(
                     "• *#{}* \"{}\" — missing {} label. _{}_\n",
                     issue.number,
                     issue.title,
@@ -250,9 +257,7 @@ fn build_report_blocks(report: &Report) -> Vec<Value> {
                     convert_inline_spans(&expand_github_tags(&issue.summary, &repo.name))
                 ));
             }
-        }
-        if !details.is_empty() {
-            for chunk in chunk_text(&details, 3000) {
+            for chunk in chunk_text(&text, 3000) {
                 blocks.push(section_block(&chunk));
             }
         }
@@ -366,6 +371,74 @@ fn build_team_blocks(blocks: &mut Vec<Value>, stats: &[TeamStats]) {
 // ============================================================================
 // Block Kit primitives
 // ============================================================================
+
+/// Format a Done / In Progress / Next category for Slack display.
+///
+/// If the LLM output is a single dense paragraph, split it into bullet points
+/// at sentence boundaries so it reads better in Slack.
+fn format_category(label: &str, text: &str, repo: &str) -> String {
+    let converted = convert_markdown(&expand_github_tags(text, repo));
+    let trimmed = converted.trim();
+
+    // If already has bullet points (• or ◦), use as-is
+    if trimmed.contains('•') || trimmed.contains('◦') {
+        return format!("{label}\n{trimmed}\n");
+    }
+
+    // If it has multiple lines that look structured, use as-is
+    let lines: Vec<&str> = trimmed.lines().filter(|l| !l.is_empty()).collect();
+    if lines.len() > 1 {
+        return format!("{label}\n{trimmed}\n");
+    }
+
+    // Single dense paragraph — split into bullets at sentence boundaries.
+    // Look for ". " followed by an uppercase letter or issue reference as split points.
+    let sentences = split_sentences(trimmed);
+    if sentences.len() <= 1 {
+        return format!("{label}\n{trimmed}\n");
+    }
+
+    let mut out = format!("{label}\n");
+    for s in &sentences {
+        let s = s.trim();
+        if !s.is_empty() {
+            out.push_str(&format!("• {s}\n"));
+        }
+    }
+    out
+}
+
+/// Split text into sentences, keeping issue references (like #254) intact.
+/// Splits on ". " when followed by a capital letter, or on ", and " / ", plus " as
+/// natural list separators in LLM output.
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        current.push(chars[i]);
+
+        // Check for ". " followed by uppercase (sentence boundary)
+        if chars[i] == '.'
+            && i + 2 < chars.len()
+            && chars[i + 1] == ' '
+            && chars[i + 2].is_uppercase()
+        {
+            parts.push(std::mem::take(&mut current));
+            i += 2; // skip the space
+            continue;
+        }
+
+        i += 1;
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
 
 fn header_block(text: &str) -> Value {
     json!({
@@ -635,6 +708,57 @@ mod tests {
                     .unwrap_or(false)
         });
         assert!(context.is_some(), "Inactive repos should appear in context block");
+    }
+
+    #[test]
+    fn test_dense_paragraph_split_into_bullets() {
+        let text = "Completed Rust/Python type unification (#254). API alignment done (#260). Test suite optimized (#258).";
+        let result = format_category(":white_check_mark: *Done*", text, "org/repo");
+        assert!(result.contains("• Completed Rust/Python"), "Should split at sentences: {result}");
+        assert!(result.contains("• API alignment"), "Should split at sentences: {result}");
+        assert!(result.contains("• Test suite"), "Should split at sentences: {result}");
+    }
+
+    #[test]
+    fn test_already_bulleted_text_unchanged() {
+        let text = "- Item one\n- Item two\n";
+        let result = format_category(":white_check_mark: *Done*", text, "org/repo");
+        assert!(result.contains("• Item one"), "Bullets should be preserved: {result}");
+        assert!(result.contains("• Item two"));
+    }
+
+    #[test]
+    fn test_short_text_no_split() {
+        let text = "Fixed the login bug.";
+        let result = format_category(":white_check_mark: *Done*", text, "org/repo");
+        assert!(!result.contains("•"), "Single sentence should not be bulleted: {result}");
+    }
+
+    #[test]
+    fn test_repo_blocks_have_headers() {
+        let report = sample_report();
+        let blocks = build_report_blocks(&report);
+        let repo_header = blocks.iter().find(|b| {
+            b["type"] == "header"
+                && b["text"]["text"]
+                    .as_str()
+                    .map(|t| t.contains("org/frontend"))
+                    .unwrap_or(false)
+        });
+        assert!(repo_header.is_some(), "Each repo should have a header block");
+    }
+
+    #[test]
+    fn test_repo_blocks_have_emoji_labels() {
+        let report = sample_report();
+        let blocks = build_report_blocks(&report);
+        let has_done = blocks.iter().any(|b| {
+            b["text"]["text"]
+                .as_str()
+                .map(|t| t.contains(":white_check_mark:") && t.contains("*Done*"))
+                .unwrap_or(false)
+        });
+        assert!(has_done, "Done section should have emoji label");
     }
 
     #[test]

@@ -65,7 +65,11 @@ impl TuiApp {
     pub fn render(&mut self, frame: &mut ratatui::Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+            .constraints([
+                Constraint::Percentage(70),
+                Constraint::Percentage(30),
+                Constraint::Length(1),  // status bar
+            ])
             .split(frame.area());
 
         self.report_height = chunks[0].height.saturating_sub(2);
@@ -133,6 +137,17 @@ impl TuiApp {
             .block(Block::default().borders(Borders::ALL).title(" Commands "))
             .wrap(Wrap { trim: false });
         frame.render_widget(repl_widget, chunks[1]);
+
+        // Status bar
+        let hint = if !self.completions.is_empty() {
+            " Tab cycle  Enter select  Esc dismiss"
+        } else if !self.search_query.is_empty() {
+            " Esc clear search  PgUp/PgDn scroll  /search <query>"
+        } else {
+            " Up/Dn scroll  PgUp/PgDn page  /command  Esc quit"
+        };
+        let status = Paragraph::new(Line::styled(hint, Style::default().fg(Color::DarkGray)));
+        frame.render_widget(status, chunks[2]);
     }
 
     // --- Input handling ------------------------------------------------------

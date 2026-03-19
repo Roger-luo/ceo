@@ -18,7 +18,6 @@ expression: terminal.backend().to_string()
 "│                                                          │"
 "│                                                          │"
 "│                                                          │"
-"│                                                          │"
 "└──────────────────────────────────────────────────────────┘"
 "┌ Commands ────────────────────────────────────────────────┐"
 "│Type /help for commands. Press Esc to quit.               │"
@@ -27,3 +26,4 @@ expression: terminal.backend().to_string()
 "│  /quit        Exit interactive mode                      │"
 "│  /top         Scroll to top of report                    │"
 "└──────────────────────────────────────────────────────────┘"
+" Tab cycle  Enter select  Esc dismiss                       "

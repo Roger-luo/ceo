@@ -1,4 +1,4 @@
-use ceo::report::{Report, RepoSection, FlaggedIssue, TeamStats, render_markdown, extract_xml_tag, expand_github_tags};
+use ceo::report::{Report, RepoSection, FlaggedIssue, TeamStats, RefLookup, render_markdown, extract_xml_tag, expand_github_tags};
 
 #[test]
 fn render_report_contains_header() {
@@ -7,6 +7,7 @@ fn render_report_contains_header() {
         date: "2026-03-06".to_string(),
         repos: vec![],
         team_stats: vec![],
+        refs: RefLookup::default(),
     };
     let md = render_markdown(&report);
     assert!(md.contains("# Project Report — 2026-03-06"));
@@ -37,6 +38,7 @@ fn render_report_with_repo_section() {
             additions: 0,
             deletions: 0,
         }],
+        refs: RefLookup::default(),
     };
     let md = render_markdown(&report);
     assert!(md.contains("## org/frontend"));
@@ -62,6 +64,7 @@ fn render_report_no_flagged_issues_omits_section() {
             flagged_issues: vec![],
         }],
         team_stats: vec![],
+        refs: RefLookup::default(),
     };
     let md = render_markdown(&report);
     assert!(!md.contains("Needs Attention"));
@@ -73,39 +76,19 @@ fn render_report_inactive_repos_as_compact_list() {
         executive_summary: None,
         date: "2026-03-06".to_string(),
         repos: vec![
-            RepoSection {
-                name: "org/active".to_string(),
-                done: Some("Some work done.".to_string()),
-                in_progress: None,
-                next: None,
-                flagged_issues: vec![],
-            },
-            RepoSection {
-                name: "org/idle-1".to_string(),
-                done: None,
-                in_progress: None,
-                next: None,
-                flagged_issues: vec![],
-            },
-            RepoSection {
-                name: "org/idle-2".to_string(),
-                done: None,
-                in_progress: None,
-                next: None,
-                flagged_issues: vec![],
-            },
+            RepoSection { name: "org/active".to_string(), done: Some("Some work done.".to_string()), in_progress: None, next: None, flagged_issues: vec![] },
+            RepoSection { name: "org/idle-1".to_string(), done: None, in_progress: None, next: None, flagged_issues: vec![] },
+            RepoSection { name: "org/idle-2".to_string(), done: None, in_progress: None, next: None, flagged_issues: vec![] },
         ],
         team_stats: vec![],
+        refs: RefLookup::default(),
     };
     let md = render_markdown(&report);
-    // Active repo gets its own section
     assert!(md.contains("## org/active"));
     assert!(md.contains("Some work done."));
-    // Inactive repos listed compactly under one heading
     assert!(md.contains("## No Recent Activity"));
     assert!(md.contains("- org/idle-1"));
     assert!(md.contains("- org/idle-2"));
-    // Inactive repos don't get their own ## heading
     assert!(!md.contains("## org/idle-1"));
 }
 
@@ -119,6 +102,7 @@ fn render_report_inactive_team_members_listed_separately() {
             TeamStats { name: "Alice".to_string(), github: "alice".to_string(), active: 3, closed_this_week: 1, additions: 0, deletions: 0 },
             TeamStats { name: "Bob".to_string(), github: "bob".to_string(), active: 0, closed_this_week: 0, additions: 0, deletions: 0 },
         ],
+        refs: RefLookup::default(),
     };
     let md = render_markdown(&report);
     assert!(md.contains("Alice"));
@@ -149,20 +133,8 @@ fn extract_xml_tag_returns_none_for_empty_content() {
 
 #[test]
 fn has_activity_detects_active_and_inactive() {
-    let active = RepoSection {
-        name: "r".to_string(),
-        done: Some("x".to_string()),
-        in_progress: None,
-        next: None,
-        flagged_issues: vec![],
-    };
-    let inactive = RepoSection {
-        name: "r".to_string(),
-        done: None,
-        in_progress: None,
-        next: None,
-        flagged_issues: vec![],
-    };
+    let active = RepoSection { name: "r".to_string(), done: Some("x".to_string()), in_progress: None, next: None, flagged_issues: vec![] };
+    let inactive = RepoSection { name: "r".to_string(), done: None, in_progress: None, next: None, flagged_issues: vec![] };
     assert!(active.has_activity());
     assert!(!inactive.has_activity());
 }
@@ -173,16 +145,11 @@ fn render_report_team_stats_includes_lines() {
         executive_summary: None,
         date: "2026-03-10".to_string(),
         repos: vec![],
-        team_stats: vec![
-            TeamStats {
-                name: "Alice".to_string(),
-                github: "alice".to_string(),
-                active: 3,
-                closed_this_week: 1,
-                additions: 500,
-                deletions: 120,
-            },
-        ],
+        team_stats: vec![TeamStats {
+            name: "Alice".to_string(), github: "alice".to_string(),
+            active: 3, closed_this_week: 1, additions: 500, deletions: 120,
+        }],
+        refs: RefLookup::default(),
     };
     let md = render_markdown(&report);
     assert!(md.contains("+500"));
@@ -191,24 +158,17 @@ fn render_report_team_stats_includes_lines() {
 
 #[test]
 fn render_report_inactive_member_with_lines_shown_as_active() {
-    // A member with 0 issues but nonzero lines should appear in the active table
     let report = Report {
         executive_summary: None,
         date: "2026-03-10".to_string(),
         repos: vec![],
-        team_stats: vec![
-            TeamStats {
-                name: "Carol".to_string(),
-                github: "carol".to_string(),
-                active: 0,
-                closed_this_week: 0,
-                additions: 200,
-                deletions: 50,
-            },
-        ],
+        team_stats: vec![TeamStats {
+            name: "Carol".to_string(), github: "carol".to_string(),
+            active: 0, closed_this_week: 0, additions: 200, deletions: 50,
+        }],
+        refs: RefLookup::default(),
     };
     let md = render_markdown(&report);
-    // Carol has lines of code, so should NOT be in the "No activity" list
     assert!(md.contains("Carol"));
     assert!(md.contains("+200"));
     assert!(!md.contains("No activity:"));
@@ -232,21 +192,12 @@ fn expand_github_tags_handles_no_tags() {
 
 #[test]
 fn expand_github_tags_in_rendered_report() {
-    let report = Report {
-        executive_summary: None,
-        date: "2026-03-10".to_string(),
-        repos: vec![RepoSection {
-            name: "org/repo".to_string(),
-            done: Some("Merged <pr>42</pr> by <gh>alice</gh>.".to_string()),
-            in_progress: None,
-            next: None,
-            flagged_issues: vec![],
-        }],
-        team_stats: vec![],
-    };
-    let md = render_markdown(&report);
-    assert!(md.contains("[#42](https://github.com/org/repo/pull/42)"));
-    assert!(md.contains("[@alice](https://github.com/alice)"));
-    assert!(!md.contains("<pr>"));
-    assert!(!md.contains("<gh>"));
+    // Note: render_markdown no longer expands tags (linkify does it in the pipeline),
+    // but expand_github_tags itself should still work for backward compat with cached data.
+    let text = "Merged <pr>42</pr> by <gh>alice</gh>.";
+    let result = expand_github_tags(text, "org/repo");
+    assert!(result.contains("[#42](https://github.com/org/repo/pull/42)"));
+    assert!(result.contains("[@alice](https://github.com/alice)"));
+    assert!(!result.contains("<pr>"));
+    assert!(!result.contains("<gh>"));
 }

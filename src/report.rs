@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 /// Format a GitHub handle as a clickable markdown link.
@@ -110,6 +111,229 @@ pub struct Report {
     pub executive_summary: Option<String>,
     pub repos: Vec<RepoSection>,
     pub team_stats: Vec<TeamStats>,
+    /// Lookup table for linkifying #N and @user references in text.
+    pub refs: RefLookup,
+}
+
+/// Lookup table for resolving bare `#N`, `org/repo#N`, and `@user` references
+/// into full GitHub links.
+#[derive(Default)]
+pub struct RefLookup {
+    /// (repo, number) → "issue" or "pr"
+    pub issues: HashMap<(String, u64), String>,
+    /// Set of known GitHub handles (lowercase)
+    pub users: HashSet<String>,
+    /// All repo names in the config (for resolving bare #N in repo context)
+    pub repos: Vec<String>,
+}
+
+impl RefLookup {
+    /// Build from issue rows returned by the pipeline.
+    pub fn from_issue_rows(rows: &HashMap<String, Vec<crate::db::IssueRow>>) -> Self {
+        let mut issues = HashMap::new();
+        let mut users = HashSet::new();
+        let repos: Vec<String> = rows.keys().cloned().collect();
+
+        for (repo, repo_rows) in rows {
+            for row in repo_rows {
+                issues.insert((repo.clone(), row.number), row.kind.clone());
+                if let Some(author) = &row.author {
+                    users.insert(author.to_lowercase());
+                }
+                // Parse assignees JSON array
+                if let Ok(assignees) = serde_json::from_str::<Vec<String>>(&row.assignees) {
+                    for a in assignees {
+                        users.insert(a.to_lowercase());
+                    }
+                }
+            }
+        }
+
+        Self { issues, users, repos }
+    }
+}
+
+/// Replace bare `#N`, `org/repo#N`, and `@user` patterns in text with GitHub
+/// markdown links, using the lookup table to determine whether references are
+/// issues or PRs.
+///
+/// When `repo_context` is non-empty, bare `#N` resolves against that repo.
+/// When empty, all configured repos are searched (first match wins).
+pub fn linkify(text: &str, refs: &RefLookup, repo_context: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Skip anything inside existing markdown links [text](url) or <url|text>
+        if chars[i] == '[' {
+            if let Some(end) = find_markdown_link_end(&chars, i) {
+                for &c in &chars[i..=end] {
+                    result.push(c);
+                }
+                i = end + 1;
+                continue;
+            }
+        }
+        if chars[i] == '<' {
+            if let Some(end) = find_angle_link_end(&chars, i) {
+                for &c in &chars[i..=end] {
+                    result.push(c);
+                }
+                i = end + 1;
+                continue;
+            }
+        }
+
+        // Try qualified ref: org/repo#N
+        if chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_' {
+            if let Some((link, advance)) = try_qualified_ref(&chars, i, refs) {
+                result.push_str(&link);
+                i += advance;
+                continue;
+            }
+        }
+
+        // Try bare #N (only if preceded by space, start of line, or punctuation)
+        if chars[i] == '#' && (i == 0 || !chars[i - 1].is_alphanumeric()) {
+            if let Some((link, advance)) = try_bare_ref(&chars, i, refs, repo_context) {
+                result.push_str(&link);
+                i += advance;
+                continue;
+            }
+        }
+
+        // Try @user (only if preceded by space, start of line, or punctuation)
+        if chars[i] == '@' && (i == 0 || !chars[i - 1].is_alphanumeric()) {
+            if let Some((link, advance)) = try_user_ref(&chars, i, refs) {
+                result.push_str(&link);
+                i += advance;
+                continue;
+            }
+        }
+
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    result
+}
+
+/// Find the end of a markdown link `[text](url)` starting at `[`.
+fn find_markdown_link_end(chars: &[char], start: usize) -> Option<usize> {
+    let mut j = start + 1;
+    while j < chars.len() && chars[j] != ']' {
+        j += 1;
+    }
+    if j + 1 >= chars.len() || chars[j + 1] != '(' {
+        return None;
+    }
+    j += 2;
+    while j < chars.len() && chars[j] != ')' {
+        j += 1;
+    }
+    if j < chars.len() { Some(j) } else { None }
+}
+
+/// Find the end of an angle-bracket link `<url|text>` starting at `<`.
+fn find_angle_link_end(chars: &[char], start: usize) -> Option<usize> {
+    // Must contain a pipe or "http" to be a link, not an XML tag
+    let mut j = start + 1;
+    let mut has_pipe = false;
+    let mut has_http = false;
+    while j < chars.len() && chars[j] != '>' {
+        if chars[j] == '|' { has_pipe = true; }
+        if chars[j] == 'h' && j + 4 < chars.len() {
+            let s: String = chars[j..j + 4].iter().collect();
+            if s == "http" { has_http = true; }
+        }
+        j += 1;
+    }
+    if j < chars.len() && (has_pipe || has_http) { Some(j) } else { None }
+}
+
+/// Try to parse `org/repo#N` at position `i`.
+fn try_qualified_ref(chars: &[char], i: usize, refs: &RefLookup) -> Option<(String, usize)> {
+    // Scan for pattern: word/word#digits
+    let mut j = i;
+    // owner part
+    while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '-' || chars[j] == '_' || chars[j] == '.') {
+        j += 1;
+    }
+    if j >= chars.len() || chars[j] != '/' { return None; }
+    let _slash = j;
+    j += 1;
+    // repo part
+    while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '-' || chars[j] == '_' || chars[j] == '.') {
+        j += 1;
+    }
+    if j >= chars.len() || chars[j] != '#' { return None; }
+    let hash = j;
+    j += 1;
+    // number part
+    let num_start = j;
+    while j < chars.len() && chars[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j == num_start { return None; }
+
+    let repo: String = chars[i..hash].iter().collect();
+    let num_str: String = chars[num_start..j].iter().collect();
+    let number: u64 = num_str.parse().ok()?;
+
+    let kind = refs.issues.get(&(repo.clone(), number))?;
+    let path = if kind == "pr" { "pull" } else { "issues" };
+    let display: String = chars[i..j].iter().collect();
+    Some((format!("[{display}](https://github.com/{repo}/{path}/{number})"), j - i))
+}
+
+/// Try to parse bare `#N` at position `i`.
+fn try_bare_ref(chars: &[char], i: usize, refs: &RefLookup, repo_context: &str) -> Option<(String, usize)> {
+    if chars[i] != '#' { return None; }
+    let mut j = i + 1;
+    let num_start = j;
+    while j < chars.len() && chars[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j == num_start { return None; }
+    let num_str: String = chars[num_start..j].iter().collect();
+    let number: u64 = num_str.parse().ok()?;
+
+    // Try repo context first
+    if !repo_context.is_empty() {
+        if let Some(kind) = refs.issues.get(&(repo_context.to_string(), number)) {
+            let path = if kind == "pr" { "pull" } else { "issues" };
+            return Some((format!("[#{number}](https://github.com/{repo_context}/{path}/{number})"), j - i));
+        }
+    }
+
+    // Try all repos
+    for repo in &refs.repos {
+        if let Some(kind) = refs.issues.get(&(repo.clone(), number)) {
+            let path = if kind == "pr" { "pull" } else { "issues" };
+            return Some((format!("[{repo}#{number}](https://github.com/{repo}/{path}/{number})"), j - i));
+        }
+    }
+
+    None
+}
+
+/// Try to parse `@username` at position `i`.
+fn try_user_ref(chars: &[char], i: usize, refs: &RefLookup) -> Option<(String, usize)> {
+    if chars[i] != '@' { return None; }
+    let mut j = i + 1;
+    while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '-' || chars[j] == '_') {
+        j += 1;
+    }
+    if j == i + 1 { return None; }
+    let handle: String = chars[i + 1..j].iter().collect();
+
+    if refs.users.contains(&handle.to_lowercase()) {
+        Some((format!("[@{handle}](https://github.com/{handle})"), j - i))
+    } else {
+        None
+    }
 }
 
 pub struct RepoSection {
@@ -146,9 +370,9 @@ pub fn render_markdown(report: &Report) -> String {
     let mut out = String::new();
     writeln!(out, "# Project Report — {}\n", report.date).unwrap();
 
-    // Executive summary (if generated) — expand <gh> tags only (no repo context)
+    // Executive summary (already linkified by pipeline)
     if let Some(summary) = &report.executive_summary {
-        writeln!(out, "{}\n", expand_github_tags(summary, "")).unwrap();
+        writeln!(out, "{}\n", summary).unwrap();
         writeln!(out, "---\n").unwrap();
     }
 
@@ -161,16 +385,15 @@ pub fn render_markdown(report: &Report) -> String {
         .collect();
 
     for repo in &active {
-        let expand = |text: &str| expand_github_tags(text, &repo.name);
         writeln!(out, "## {}\n", repo.name).unwrap();
         if let Some(done) = &repo.done {
-            writeln!(out, "**Done:** {}\n", expand(done)).unwrap();
+            writeln!(out, "**Done:** {done}\n").unwrap();
         }
         if let Some(ip) = &repo.in_progress {
-            writeln!(out, "**In Progress:** {}\n", expand(ip)).unwrap();
+            writeln!(out, "**In Progress:** {ip}\n").unwrap();
         }
         if let Some(next) = &repo.next {
-            writeln!(out, "**Next:** {}\n", expand(next)).unwrap();
+            writeln!(out, "**Next:** {next}\n").unwrap();
         }
 
         if !repo.flagged_issues.is_empty() {
@@ -180,7 +403,7 @@ pub fn render_markdown(report: &Report) -> String {
                 writeln!(
                     out,
                     "- **#{}** \"{}\" — missing {} label. *{}*",
-                    issue.number, issue.title, missing, expand(&issue.summary)
+                    issue.number, issue.title, missing, issue.summary
                 ).unwrap();
             }
             writeln!(out).unwrap();
@@ -233,43 +456,91 @@ pub fn render_markdown(report: &Report) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn expand_unqualified_issue() {
-        let result = expand_github_tags("<issue>64</issue>", "org/repo");
-        assert_eq!(result, "[#64](https://github.com/org/repo/issues/64)");
+    fn test_refs() -> RefLookup {
+        let mut refs = RefLookup::default();
+        refs.issues.insert(("org/repo".into(), 42), "pr".into());
+        refs.issues.insert(("org/repo".into(), 55), "issue".into());
+        refs.issues.insert(("acme/frontend".into(), 15), "issue".into());
+        refs.issues.insert(("acme/backend".into(), 50), "pr".into());
+        refs.users.insert("alice".into());
+        refs.users.insert("bob".into());
+        refs.repos = vec!["org/repo".into(), "acme/frontend".into(), "acme/backend".into()];
+        refs
     }
 
     #[test]
-    fn expand_qualified_issue() {
-        let result = expand_github_tags("<issue>acme/frontend#15</issue>", "");
-        assert_eq!(result, "[acme/frontend#15](https://github.com/acme/frontend/issues/15)");
+    fn linkify_bare_issue_with_repo_context() {
+        let refs = test_refs();
+        let result = linkify("Fixed #55 today", &refs, "org/repo");
+        assert_eq!(result, "Fixed [#55](https://github.com/org/repo/issues/55) today");
     }
 
     #[test]
-    fn expand_qualified_pr() {
-        let result = expand_github_tags("<pr>acme/backend#42</pr>", "other/repo");
-        assert_eq!(result, "[acme/backend#42](https://github.com/acme/backend/pull/42)");
+    fn linkify_bare_pr_with_repo_context() {
+        let refs = test_refs();
+        let result = linkify("Merged #42", &refs, "org/repo");
+        assert_eq!(result, "Merged [#42](https://github.com/org/repo/pull/42)");
     }
 
     #[test]
-    fn expand_gh_tag() {
-        let result = expand_github_tags("<gh>alice</gh>", "");
-        assert_eq!(result, "[@alice](https://github.com/alice)");
+    fn linkify_qualified_ref() {
+        let refs = test_refs();
+        let result = linkify("See acme/backend#50 for details", &refs, "");
+        assert_eq!(result, "See [acme/backend#50](https://github.com/acme/backend/pull/50) for details");
     }
 
     #[test]
-    fn expand_unqualified_no_repo_falls_back() {
-        // When no repo context, bare numbers render without link
-        let result = expand_github_tags("<issue>99</issue>", "");
-        assert_eq!(result, "#99");
+    fn linkify_user_ref() {
+        let refs = test_refs();
+        let result = linkify("Thanks @alice!", &refs, "");
+        assert_eq!(result, "Thanks [@alice](https://github.com/alice)!");
     }
 
     #[test]
-    fn expand_mixed_tags() {
-        let text = "<gh>alice</gh> fixed <pr>org/repo#42</pr> and <issue>55</issue>";
-        let result = expand_github_tags(text, "org/repo");
+    fn linkify_unknown_user_left_alone() {
+        let refs = test_refs();
+        let result = linkify("@unknown did stuff", &refs, "");
+        assert_eq!(result, "@unknown did stuff");
+    }
+
+    #[test]
+    fn linkify_unknown_number_left_alone() {
+        let refs = test_refs();
+        let result = linkify("See #999", &refs, "org/repo");
+        assert_eq!(result, "See #999");
+    }
+
+    #[test]
+    fn linkify_bare_ref_no_context_searches_all_repos() {
+        let refs = test_refs();
+        // #42 exists in org/repo — should find it even without context
+        let result = linkify("PR #42 landed", &refs, "");
+        assert!(result.contains("[org/repo#42](https://github.com/org/repo/pull/42)"));
+    }
+
+    #[test]
+    fn linkify_skips_existing_markdown_links() {
+        let refs = test_refs();
+        let result = linkify("[#42](https://example.com) and #55", &refs, "org/repo");
+        assert!(result.starts_with("[#42](https://example.com)"));
+        assert!(result.contains("[#55](https://github.com/org/repo/issues/55)"));
+    }
+
+    #[test]
+    fn linkify_mixed() {
+        let refs = test_refs();
+        let text = "@alice fixed org/repo#42 and #55 is next";
+        let result = linkify(text, &refs, "org/repo");
         assert!(result.contains("[@alice](https://github.com/alice)"));
         assert!(result.contains("[org/repo#42](https://github.com/org/repo/pull/42)"));
         assert!(result.contains("[#55](https://github.com/org/repo/issues/55)"));
+    }
+
+    // Keep expand_github_tags tests for backward compat with cached summaries
+    #[test]
+    fn expand_tags_still_works() {
+        let result = expand_github_tags("<gh>alice</gh> fixed <pr>42</pr>", "org/repo");
+        assert!(result.contains("[@alice](https://github.com/alice)"));
+        assert!(result.contains("[#42](https://github.com/org/repo/pull/42)"));
     }
 }

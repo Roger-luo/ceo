@@ -3,7 +3,7 @@ use log::debug;
 use serde_json::{json, Value};
 
 use crate::config::SlackConfig;
-use crate::report::{expand_github_tags, Report};
+use crate::report::Report;
 
 const ENV_WEBHOOK: &str = "CEO_SLACK_WEBHOOK";
 const ENV_TOKEN: &str = "CEO_SLACK_TOKEN";
@@ -233,7 +233,7 @@ fn build_report_blocks(report: &Report, sort: &str) -> Vec<Value> {
 
     if let Some(summary) = &report.executive_summary {
         bottom.push(section_block(":memo: *Summary*"));
-        let text = convert_markdown(&expand_github_tags(summary, ""));
+        let text = convert_markdown(summary);
         for chunk in chunk_text(&text, 3000) {
             bottom.push(section_block(&chunk));
         }
@@ -307,19 +307,19 @@ fn build_repo_blocks(blocks: &mut Vec<Value>, repo: &crate::report::RepoSection)
     blocks.push(header_block(&repo.name));
 
     if let Some(done) = &repo.done {
-        let text = format_category(":white_check_mark: *Done*", done, &repo.name);
+        let text = format_category(":white_check_mark: *Done*", done);
         for chunk in chunk_text(&text, 3000) {
             blocks.push(section_block(&chunk));
         }
     }
     if let Some(ip) = &repo.in_progress {
-        let text = format_category(":construction: *In Progress*", ip, &repo.name);
+        let text = format_category(":construction: *In Progress*", ip);
         for chunk in chunk_text(&text, 3000) {
             blocks.push(section_block(&chunk));
         }
     }
     if let Some(next) = &repo.next {
-        let text = format_category(":soon: *Next*", next, &repo.name);
+        let text = format_category(":soon: *Next*", next);
         for chunk in chunk_text(&text, 3000) {
             blocks.push(section_block(&chunk));
         }
@@ -333,7 +333,7 @@ fn build_repo_blocks(blocks: &mut Vec<Value>, repo: &crate::report::RepoSection)
                 issue.number,
                 issue.title,
                 missing,
-                convert_inline_spans(&expand_github_tags(&issue.summary, &repo.name))
+                convert_inline_spans(&issue.summary)
             ));
         }
         for chunk in chunk_text(&text, 3000) {
@@ -349,7 +349,7 @@ fn build_summary_blocks(report: &Report, _sort: &str) -> Vec<Value> {
     blocks.push(header_block(&format!("Project Report — {}", report.date)));
 
     if let Some(summary) = &report.executive_summary {
-        let text = convert_markdown(&expand_github_tags(summary, ""));
+        let text = convert_markdown(summary);
         for chunk in chunk_text(&text, 3000) {
             blocks.push(section_block(&chunk));
         }
@@ -376,8 +376,8 @@ fn build_summary_blocks(report: &Report, _sort: &str) -> Vec<Value> {
 ///
 /// If the LLM output is a single dense paragraph, split it into bullet points
 /// at sentence boundaries so it reads better in Slack.
-fn format_category(label: &str, text: &str, repo: &str) -> String {
-    let converted = convert_markdown(&expand_github_tags(text, repo));
+fn format_category(label: &str, text: &str) -> String {
+    let converted = convert_markdown(text);
     let trimmed = converted.trim();
 
     // If already has bullet points (• or ◦), use as-is
@@ -594,7 +594,7 @@ fn convert_links(text: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report::{FlaggedIssue, RepoSection};
+    use crate::report::{FlaggedIssue, RefLookup, RepoSection};
 
     fn sample_report() -> Report {
         Report {
@@ -617,6 +617,7 @@ mod tests {
                 },
             ],
             team_stats: vec![],
+            refs: RefLookup::default(),
         }
     }
 
@@ -687,6 +688,7 @@ mod tests {
                 RepoSection { name: "org/middle".into(), done: Some("x".into()), in_progress: None, next: None, flagged_issues: vec![] },
             ],
             team_stats: vec![],
+            refs: RefLookup::default(),
         };
         let blocks = build_report_blocks(&report, "alphabetical");
         let headers: Vec<&str> = blocks.iter()
@@ -707,6 +709,7 @@ mod tests {
                 RepoSection { name: "org/alpha".into(), done: Some("x".into()), in_progress: None, next: None, flagged_issues: vec![] },
             ],
             team_stats: vec![],
+            refs: RefLookup::default(),
         };
         let blocks = build_report_blocks(&report, "config");
         let headers: Vec<&str> = blocks.iter()
@@ -753,7 +756,7 @@ mod tests {
     #[test]
     fn test_dense_paragraph_split_into_bullets() {
         let text = "Completed Rust/Python type unification (#254). API alignment done (#260). Test suite optimized (#258).";
-        let result = format_category(":white_check_mark: *Done*", text, "org/repo");
+        let result = format_category(":white_check_mark: *Done*", text);
         assert!(result.contains("• Completed Rust/Python"), "Should split at sentences: {result}");
         assert!(result.contains("• API alignment"), "Should split at sentences: {result}");
         assert!(result.contains("• Test suite"), "Should split at sentences: {result}");
@@ -762,7 +765,7 @@ mod tests {
     #[test]
     fn test_already_bulleted_text_unchanged() {
         let text = "- Item one\n- Item two\n";
-        let result = format_category(":white_check_mark: *Done*", text, "org/repo");
+        let result = format_category(":white_check_mark: *Done*", text);
         assert!(result.contains("• Item one"), "Bullets should be preserved: {result}");
         assert!(result.contains("• Item two"));
     }
@@ -770,7 +773,7 @@ mod tests {
     #[test]
     fn test_short_text_no_split() {
         let text = "Fixed the login bug.";
-        let result = format_category(":white_check_mark: *Done*", text, "org/repo");
+        let result = format_category(":white_check_mark: *Done*", text);
         assert!(!result.contains("•"), "Single sentence should not be bulleted: {result}");
     }
 
@@ -872,6 +875,7 @@ mod tests {
                 }],
             }],
             team_stats: vec![],
+            refs: RefLookup::default(),
         };
         let blocks = build_report_blocks(&report, "alphabetical");
         let has_flagged = blocks.iter().any(|b| {

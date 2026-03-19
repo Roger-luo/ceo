@@ -1,7 +1,7 @@
 use crate::agent::Agent;
 use crate::config::Config;
 use crate::error::PipelineError;
-use crate::report::Report;
+use crate::report::{linkify, RefLookup, Report};
 use crate::tasks::commit_log::BuildCommitLogTask;
 use crate::tasks::executive::ExecutiveSummaryTask;
 use crate::tasks::fetch_data::FetchDataTask;
@@ -70,10 +70,27 @@ pub async fn run_pipeline(
     }
 
     progress.finish();
+
+    let refs = RefLookup::from_issue_rows(&ctx.issue_rows);
+
+    // Linkify all text fields in the report
+    let executive_summary = ctx.executive_summary.map(|s| linkify(&s, &refs, ""));
+    let repos = ctx.repo_sections.into_iter().map(|mut r| {
+        let repo = r.name.clone();
+        r.done = r.done.map(|s| linkify(&s, &refs, &repo));
+        r.in_progress = r.in_progress.map(|s| linkify(&s, &refs, &repo));
+        r.next = r.next.map(|s| linkify(&s, &refs, &repo));
+        for issue in &mut r.flagged_issues {
+            issue.summary = linkify(&issue.summary, &refs, &repo);
+        }
+        r
+    }).collect();
+
     Ok(Report {
         date: ctx.date_label.clone(),
-        executive_summary: ctx.executive_summary,
-        repos: ctx.repo_sections,
+        executive_summary,
+        repos,
         team_stats: ctx.team_stats,
+        refs,
     })
 }

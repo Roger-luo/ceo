@@ -21,15 +21,15 @@ impl Agent for MockAgent {
             if rendered.contains("Write a concise summary for repo") {
                 if rendered.contains("org/frontend") {
                     Ok("\
-<done>Shipped dark mode (<pr>10</pr>) and fixed memory leak (<issue>11</issue>) — \
-both merged by <gh>alice</gh>.</done>
-<in_progress>Working on <pr>13</pr> for accessibility improvements.</in_progress>
+<done>Shipped dark mode (#10) and fixed memory leak (#11) — \
+both merged by @alice.</done>
+<in_progress>Working on #13 for accessibility improvements.</in_progress>
 <next>Performance audit planned for next sprint.</next>"
                         .to_string())
                 } else {
                     Ok("\
-<done>Released v2.0 API with pagination support (<pr>50</pr>).</done>
-<in_progress><gh>charlie</gh> investigating rate-limit bug (<issue>55</issue>).</in_progress>"
+<done>Released v2.0 API with pagination support (#50).</done>
+<in_progress>@charlie investigating rate-limit bug (#55).</in_progress>"
                         .to_string())
                 }
             } else if rendered.contains("executive")
@@ -38,15 +38,15 @@ both merged by <gh>alice</gh>.</done>
             {
                 Ok("\
 ## Highlights
-- Dark mode shipped on frontend (<pr>org/frontend#10</pr>) by <gh>alice</gh>
-- Backend v2.0 API released (<pr>org/backend#50</pr>)
+- Dark mode shipped on frontend (org/frontend#10) by @alice
+- Backend v2.0 API released (org/backend#50)
 
 ## Risks
-- Rate-limit bug (<issue>org/backend#55</issue>) may impact production
-- Accessibility PR (<pr>org/frontend#13</pr>) needs review
+- Rate-limit bug (org/backend#55) may impact production
+- Accessibility PR (org/frontend#13) needs review
 
 ## Outlook
-Team velocity is strong. Focus next week on <issue>org/frontend#14</issue> perf audit."
+Team velocity is strong. Focus next week on org/frontend#14 perf audit."
                     .to_string())
             } else {
                 Ok("Summary of this issue.".to_string())

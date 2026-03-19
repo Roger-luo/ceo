@@ -27,8 +27,7 @@ impl Prompt for IssueDescriptionPrompt {
              Focus on the purpose and scope — do NOT summarize any discussion or comments.\n\
              All information you need is provided below — do NOT attempt to fetch data \
              from GitHub or any external source.\n\
-             When referencing GitHub entities, use short tags: \
-             <gh>handle</gh> for users, <issue>N</issue> for issues, <pr>N</pr> for PRs.\n\n\
+             When referencing GitHub entities, use #N for issues/PRs and @handle for users.\n\n\
              Repo: {}\n\
              {} #{}: {}\n\
              Labels: {}\n\
@@ -68,8 +67,7 @@ impl Prompt for BatchIssueDescriptionPrompt {
             "Summarize each of the following GitHub issues/PRs in {}. \
              Focus on purpose and scope — do NOT summarize discussion or comments.\n\
              All information you need is provided below — do NOT fetch external data.\n\
-             When referencing GitHub entities, use short tags: \
-             <gh>handle</gh> for users, <issue>N</issue> for issues, <pr>N</pr> for PRs.\n\n\
+             When referencing GitHub entities, use #N for issues/PRs and @handle for users.\n\n\
              Respond with exactly one <summary id=\"N\">...</summary> tag per issue, \
              where N is the issue number.\n\n",
             self.summary_length
@@ -121,8 +119,7 @@ impl Prompt for DiscussionSummaryPrompt {
             "Summarize the discussion and recent activity on this GitHub issue/PR in {}.\n\
              All information you need is provided below — do NOT attempt to fetch data \
              from GitHub or any external source.\n\
-             When referencing GitHub entities, use short tags: \
-             <gh>handle</gh> for users, <issue>N</issue> for issues, <pr>N</pr> for PRs.\n\n\
+             When referencing GitHub entities, use #N for issues/PRs and @handle for users.\n\n\
              Repo: {}\n\
              #{}: {}\n\n\
              Comments:\n{}{}\n\n\
@@ -176,7 +173,7 @@ impl Prompt for WeeklySummaryPrompt {
         format!(
             "Write a concise summary for repo {}.\n\
              All information you need is provided below — do NOT fetch external data.\n\
-             Use short tags: <gh>handle</gh> for users, <issue>N</issue> for issues, <pr>N</pr> for PRs.\n\n\
+             When referencing GitHub entities, use #N for issues/PRs and @handle for users.\n\n\
              Issue/PR activity:\n{}{}{}{}\n\n\
              IMPORTANT: Summarize ALL activity — both issues/PRs AND direct commits. \
              Some branches have no PRs and only commits; their work is equally important. \
@@ -232,10 +229,8 @@ impl Prompt for ExecutiveSummaryPrompt {
             "{}\n\n\
              All information you need is provided below — do NOT fetch external data.\n\
              Since you are summarizing across multiple repos, ALWAYS qualify issue/PR \
-             references with the repo name.\n\
-             Use short tags: <gh>handle</gh> for users, \
-             <issue>owner/repo#N</issue> for issues, <pr>owner/repo#N</pr> for PRs.\n\
-             Example: <pr>acme/backend#42</pr>, <issue>acme/frontend#15</issue>.\n\n\
+             references with the repo name, e.g. org/repo#42.\n\
+             Use @handle for users.\n\n\
              Per-repo summaries:\n{}",
             self.template, self.repo_summaries
         )

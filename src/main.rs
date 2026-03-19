@@ -1,3 +1,4 @@
+mod self_update;
 mod tui;
 
 use std::sync::Mutex;
@@ -53,9 +54,29 @@ enum Commands {
         #[arg(long, default_value = "7")]
         days: i64,
     },
+    /// Manage the ceo binary (info, check for updates, self-update)
+    #[command(name = "self")]
+    Self_ {
+        #[command(subcommand)]
+        action: SelfAction,
+    },
     /// Generate an example config file (alias for `config`)
     #[command(hide = true)]
     Init,
+}
+
+#[derive(Subcommand)]
+enum SelfAction {
+    /// Show version, target, and executable path
+    Info,
+    /// Check if a newer version is available
+    Check,
+    /// Download and install the latest version
+    Update {
+        /// Install a specific version (e.g. 0.2.0)
+        #[arg(long)]
+        version: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -105,7 +126,9 @@ async fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
 
-    match cli.command {
+    let is_self_cmd = matches!(cli.command, Commands::Self_ { .. });
+
+    let result = match cli.command {
         Commands::Report { days, month, template } => cmd_report(days, month, template).await,
         Commands::Interactive => cmd_interactive().await,
         Commands::Sync => cmd_sync(),
@@ -114,8 +137,22 @@ async fn main() -> Result<()> {
         Commands::Roadmap { action } => cmd_roadmap(action),
         Commands::RateLimit => cmd_rate_limit(),
         Commands::Team { days } => cmd_team(days),
+        Commands::Self_ { action } => {
+            match action {
+                SelfAction::Info => self_update::info(),
+                SelfAction::Check => self_update::check(),
+                SelfAction::Update { version } => self_update::update(version.as_deref()),
+            }
+        }
         Commands::Init => cmd_config(None),
+    };
+
+    // Show update hint after non-self commands (best-effort, never fails)
+    if !is_self_cmd {
+        self_update::check_for_update_hint();
     }
+
+    result
 }
 
 struct ReportProgress {

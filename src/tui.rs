@@ -1235,8 +1235,9 @@ pub fn run_config_editor(config: &mut Config) -> Result<()> {
 
     editor.apply_to_config(config);
 
+    // Clear the inline viewport so the panel doesn't linger in terminal history
+    terminal.clear()?;
+
     disable_raw_mode()?;
-    // Print a newline so the shell prompt appears below the editor
-    eprintln!();
     Ok(())
 }

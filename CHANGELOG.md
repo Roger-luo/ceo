@@ -1,0 +1,83 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+### Added
+
+- Add self-update command and GitHub release workflows (bb7fea2)
+- Include open PR additions/deletions in team line stats (2907020)
+- Add team member aliases for git author matching (c8f2126)
+- Add `ceo rate-limit` command showing API limits and email cache status (a4fe80e)
+- Add `ceo team` command for instant team overview without agent calls (147405a)
+- Add progress reporting to repo summary and triage tasks (cd4617c)
+- Concurrent issue summarization with progress reporting (ba60cd8)
+- Aggregate contributor stats from commit_stats table (f842961)
+- Wire git-based stats into run_sync(), replacing GitHub API call (e67e8e2)
+- Add email-to-GitHub handle resolution with DB caching (c73248d)
+- Add clone_or_fetch_repo() and collect_git_stats() for local git log parsing (6a85470)
+- Add commit_stats and email_to_github tables with DB operations (ce6c8a2)
+- Convert entire pipeline to async with tokio (4f722ad)
+- Wire batch prompting into SummarizeIssuesTask (3df9ddd)
+- Add batch prompting infrastructure (5ec8f6e)
+- Add schema version check with auto-clear on mismatch (b17bc53)
+- Add ceo-schema crate with versioned row types (eb2ffdf)
+- Add GitHub tag post-processor to save LLM tokens (ed5ecba)
+- Enforce minimum 7-day report timeframe for weekly resolution (2d6ab40)
+- Render lines added/deleted in team stats table (1183f6c)
+- Aggregate contributor additions/deletions in team stats (b1c62a8)
+- Fetch and store contributor stats during sync (04a1c08)
+- Add contributor_stats table with upsert and query functions (dc599f5)
+- Rewrite pipeline as task executor with 7 self-contained tasks (8b13bdb)
+- Add Task trait and PipelineContext for task-based pipeline (49031fc)
+- Executive summary templates and configurable summary length (1ad9dd2)
+- Structured XML output, progress bars, branch tracking, roadmap, cache management (7bb1dbf)
+- Add sync module with GitHub fetch and DB upsert (6b16a33)
+- Add thiserror errors, model routing, per-issue summarization, sync design (129a27a)
+- Add ceo config command with wizard and set/get/show (36f065f)
+- Add Serialize, save, set_field, get_field to Config (0309ba3)
+- Rewrite agent module with Agent trait and AgentKind enum dispatch (1e5c149)
+- Add Prompt trait and agent_type config field (04fd5ec)
+- Add integration test and README (ad04f5d)
+- Add CLI interface and ratatui interactive TUI (61f0c0d)
+- Add pipeline orchestrator (14c8501)
+- Add markdown report renderer (53b16b6)
+- Add gh runner, issue filtering, and agent runner modules (9a11c99)
+- Add config parsing and GitHub issue data model (f927b2f)
+- Add project dependencies (cf30f4d)
+
+### Documentation
+
+- Add batch & parallel summarization implementation plan (4b85eaa)
+- Add batch & parallel summarization design (790d063)
+- Task-based pipeline implementation plan (9c6522e)
+- Task-based pipeline redesign (a9c3d65)
+- Add config command implementation plan (eb9448f)
+- Add config command design (582c965)
+- Add agent abstraction implementation plan (a90d10a)
+- Add agent abstraction refactor design (47614b8)
+- Add CEO CLI implementation plan (bdb4e9b)
+
+### Fixed
+
+- Use fixed date in integration test to avoid time-dependent failure (d67e7ff)
+- Use correct branch refs in bare clones, remove dead author_name field (8f10b71)
+- Handle noreply emails and URL-encode email queries (a37d51f)
+- Throttle email resolution API calls to avoid rate limiting (14006d2)
+- Set LC_ALL=C for git log parsing, don't cache unconfirmed email mappings (6f94e66)
+- Prevent stdin/stdout deadlock in async agent subprocess (23865ac)
+- Retry GitHub stats API on 202 computing response (5c1906e)
+- Handle GitHub 202 non-array response for contributor stats (fd61e0b)
+- Skip null-author contributors, safe since-date slicing (719a25a)
+- Compute closed_this_week per team member from issue state (8137d7e)
+- Treat commits as first-class data in repo summary prompt (9b01f32)
+- Pipe prompts via stdin and propagate agent errors (7fca082)
+- Parse GitHub comment IDs as strings (GraphQL node IDs) (1fa5e61)
+- Use real comment IDs, surface project errors, fix open_existing_db (6d12e88)
+- Resolve clippy warnings in sync.rs and tui.rs (3f09b81)
+
+### Refactored
+
+- Store raw email in commit_stats, resolve at query time (5c3b312)
+- Remove legacy ad-hoc migrations (7943dd4)
+- Single-pass fold for team stats instead of collect + two iterations (293f71f)
+- Migrate pipeline, main, and tests to new Agent/Prompt types (724f9c9)

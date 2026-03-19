@@ -10,7 +10,11 @@ pub fn github_link(handle: &str) -> String {
 /// Tags:
 /// - `<gh>handle</gh>` → `[@handle](https://github.com/handle)`
 /// - `<issue>64</issue>` → `[#64](https://github.com/{repo}/issues/64)`
+/// - `<issue>org/repo#64</issue>` → `[org/repo#64](https://github.com/org/repo/issues/64)`
 /// - `<pr>32</pr>` → `[#32](https://github.com/{repo}/pull/32)`
+/// - `<pr>org/repo#32</pr>` → `[org/repo#32](https://github.com/org/repo/pull/32)`
+///
+/// Qualified references (`owner/repo#N`) override the `repo` parameter.
 pub fn expand_github_tags(text: &str, repo: &str) -> String {
     let mut result = text.to_string();
     // Process each tag type by scanning for open/close pairs
@@ -19,10 +23,10 @@ pub fn expand_github_tags(text: &str, repo: &str) -> String {
             format!("[@{inner}](https://github.com/{inner})")
         }) as Box<dyn Fn(&str, &str) -> String>),
         ("<issue>", "</issue>", Box::new(|inner: &str, repo: &str| {
-            format!("[#{inner}](https://github.com/{repo}/issues/{inner})")
+            format_issue_or_pr_link(inner, repo, "issues")
         }) as Box<dyn Fn(&str, &str) -> String>),
         ("<pr>", "</pr>", Box::new(|inner: &str, repo: &str| {
-            format!("[#{inner}](https://github.com/{repo}/pull/{inner})")
+            format_issue_or_pr_link(inner, repo, "pull")
         }) as Box<dyn Fn(&str, &str) -> String>),
     ] {
         loop {
@@ -35,6 +39,24 @@ pub fn expand_github_tags(text: &str, repo: &str) -> String {
         }
     }
     result
+}
+
+/// Format a qualified or unqualified issue/PR reference as a markdown link.
+///
+/// - `"64"` + repo `"org/repo"` → `[#64](https://github.com/org/repo/issues/64)`
+/// - `"org/repo#64"` (any repo) → `[org/repo#64](https://github.com/org/repo/issues/64)`
+fn format_issue_or_pr_link(inner: &str, fallback_repo: &str, path: &str) -> String {
+    if let Some((qualified_repo, number)) = inner.split_once('#') {
+        if !qualified_repo.is_empty() && qualified_repo.contains('/') {
+            return format!("[{inner}](https://github.com/{qualified_repo}/{path}/{number})");
+        }
+    }
+    // Unqualified: just a number
+    if fallback_repo.is_empty() {
+        format!("#{inner}")
+    } else {
+        format!("[#{inner}](https://github.com/{fallback_repo}/{path}/{inner})")
+    }
 }
 
 /// Extract all `<summary id="N">...</summary>` tags from a batch response.
@@ -205,4 +227,49 @@ pub fn render_markdown(report: &Report) -> String {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_unqualified_issue() {
+        let result = expand_github_tags("<issue>64</issue>", "org/repo");
+        assert_eq!(result, "[#64](https://github.com/org/repo/issues/64)");
+    }
+
+    #[test]
+    fn expand_qualified_issue() {
+        let result = expand_github_tags("<issue>acme/frontend#15</issue>", "");
+        assert_eq!(result, "[acme/frontend#15](https://github.com/acme/frontend/issues/15)");
+    }
+
+    #[test]
+    fn expand_qualified_pr() {
+        let result = expand_github_tags("<pr>acme/backend#42</pr>", "other/repo");
+        assert_eq!(result, "[acme/backend#42](https://github.com/acme/backend/pull/42)");
+    }
+
+    #[test]
+    fn expand_gh_tag() {
+        let result = expand_github_tags("<gh>alice</gh>", "");
+        assert_eq!(result, "[@alice](https://github.com/alice)");
+    }
+
+    #[test]
+    fn expand_unqualified_no_repo_falls_back() {
+        // When no repo context, bare numbers render without link
+        let result = expand_github_tags("<issue>99</issue>", "");
+        assert_eq!(result, "#99");
+    }
+
+    #[test]
+    fn expand_mixed_tags() {
+        let text = "<gh>alice</gh> fixed <pr>org/repo#42</pr> and <issue>55</issue>";
+        let result = expand_github_tags(text, "org/repo");
+        assert!(result.contains("[@alice](https://github.com/alice)"));
+        assert!(result.contains("[org/repo#42](https://github.com/org/repo/pull/42)"));
+        assert!(result.contains("[#55](https://github.com/org/repo/issues/55)"));
+    }
 }

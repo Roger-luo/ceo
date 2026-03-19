@@ -231,7 +231,11 @@ impl Prompt for ExecutiveSummaryPrompt {
         format!(
             "{}\n\n\
              All information you need is provided below — do NOT fetch external data.\n\
-             Use short tags: <gh>handle</gh> for users, <issue>N</issue> for issues, <pr>N</pr> for PRs.\n\n\
+             Since you are summarizing across multiple repos, ALWAYS qualify issue/PR \
+             references with the repo name.\n\
+             Use short tags: <gh>handle</gh> for users, \
+             <issue>owner/repo#N</issue> for issues, <pr>owner/repo#N</pr> for PRs.\n\
+             Example: <pr>acme/backend#42</pr>, <issue>acme/frontend#15</issue>.\n\n\
              Per-repo summaries:\n{}",
             self.template, self.repo_summaries
         )

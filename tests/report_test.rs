@@ -5,6 +5,7 @@ fn render_report_contains_header() {
     let report = Report {
         executive_summary: None,
         date: "2026-03-06".to_string(),
+        generated_at: "2026-03-06T10:00:00-04:00".to_string(),
         repos: vec![],
         team_stats: vec![],
         refs: RefLookup::default(),
@@ -18,6 +19,7 @@ fn render_report_with_repo_section() {
     let report = Report {
         executive_summary: None,
         date: "2026-03-06".to_string(),
+        generated_at: "2026-03-06T10:00:00-04:00".to_string(),
         repos: vec![RepoSection {
             name: "org/frontend".to_string(),
             done: Some("Fixed 3 bugs. Migrated to new auth.".to_string()),
@@ -56,6 +58,7 @@ fn render_report_no_flagged_issues_omits_section() {
     let report = Report {
         executive_summary: None,
         date: "2026-03-06".to_string(),
+        generated_at: "2026-03-06T10:00:00-04:00".to_string(),
         repos: vec![RepoSection {
             name: "org/backend".to_string(),
             done: Some("All good.".to_string()),
@@ -75,6 +78,7 @@ fn render_report_inactive_repos_as_compact_list() {
     let report = Report {
         executive_summary: None,
         date: "2026-03-06".to_string(),
+        generated_at: "2026-03-06T10:00:00-04:00".to_string(),
         repos: vec![
             RepoSection { name: "org/active".to_string(), done: Some("Some work done.".to_string()), in_progress: None, next: None, flagged_issues: vec![] },
             RepoSection { name: "org/idle-1".to_string(), done: None, in_progress: None, next: None, flagged_issues: vec![] },
@@ -97,6 +101,7 @@ fn render_report_inactive_team_members_listed_separately() {
     let report = Report {
         executive_summary: None,
         date: "2026-03-06".to_string(),
+        generated_at: "2026-03-06T10:00:00-04:00".to_string(),
         repos: vec![],
         team_stats: vec![
             TeamStats { name: "Alice".to_string(), github: "alice".to_string(), active: 3, closed_this_week: 1, additions: 0, deletions: 0 },
@@ -144,6 +149,7 @@ fn render_report_team_stats_includes_lines() {
     let report = Report {
         executive_summary: None,
         date: "2026-03-10".to_string(),
+        generated_at: "2026-03-10T10:00:00-04:00".to_string(),
         repos: vec![],
         team_stats: vec![TeamStats {
             name: "Alice".to_string(), github: "alice".to_string(),
@@ -161,6 +167,7 @@ fn render_report_inactive_member_with_lines_shown_as_active() {
     let report = Report {
         executive_summary: None,
         date: "2026-03-10".to_string(),
+        generated_at: "2026-03-10T10:00:00-04:00".to_string(),
         repos: vec![],
         team_stats: vec![TeamStats {
             name: "Carol".to_string(), github: "carol".to_string(),
@@ -200,4 +207,34 @@ fn expand_github_tags_in_rendered_report() {
     assert!(result.contains("[@alice](https://github.com/alice)"));
     assert!(!result.contains("<pr>"));
     assert!(!result.contains("<gh>"));
+}
+
+#[test]
+fn render_report_contains_generated_at_timestamp() {
+    let report = Report {
+        executive_summary: None,
+        date: "2026-03-19".to_string(),
+        generated_at: "2026-03-19T14:32:05-04:00".to_string(),
+        repos: vec![],
+        team_stats: vec![],
+        refs: RefLookup::default(),
+    };
+    let md = render_markdown(&report);
+    assert!(md.contains("*Generated at 2026-03-19T14:32:05-04:00*"),
+        "Report should contain the full generated_at timestamp, got:\n{md}");
+}
+
+#[test]
+fn render_report_generated_at_includes_timezone() {
+    let report = Report {
+        executive_summary: None,
+        date: "2026-03-19".to_string(),
+        generated_at: "2026-03-19T14:32:05+09:00".to_string(),
+        repos: vec![],
+        team_stats: vec![],
+        refs: RefLookup::default(),
+    };
+    let md = render_markdown(&report);
+    // Timestamp must include timezone offset for debugging
+    assert!(md.contains("+09:00"), "Timestamp should preserve timezone offset");
 }

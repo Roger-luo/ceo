@@ -1,5 +1,8 @@
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
+
+use log::warn;
 
 use crate::report::TeamStats;
 
@@ -27,6 +30,10 @@ impl Task for TeamStatsTask {
     fn run<'a, 'ctx>(&'a self, ctx: &'a mut PipelineContext<'ctx>) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>
     where 'ctx: 'a {
         Box::pin(async move {
+        let team_handles: HashSet<String> = ctx.config.team.iter()
+            .map(|m| m.github.to_ascii_lowercase())
+            .collect();
+
         ctx.team_stats = ctx
             .config
             .team
@@ -77,6 +84,19 @@ impl Task for TeamStatsTask {
                 }
             })
             .collect();
+
+        // Warn about contributor stats that don't match any team member.
+        // This helps diagnose missing email-to-github mappings.
+        for (repo, rows) in &ctx.contributor_stats {
+            for row in rows {
+                if !team_handles.contains(&row.author.to_ascii_lowercase()) {
+                    warn!(
+                        "Contributor '{}' in {} has {} commits (+{}/-{}) but does not match any team member github handle",
+                        row.author, repo, row.commits, row.additions, row.deletions
+                    );
+                }
+            }
+        }
 
         Ok(())
         })

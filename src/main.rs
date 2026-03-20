@@ -262,7 +262,7 @@ impl PipelineProgress for ReportProgress {
 }
 
 fn resolve_date_range(days: i64, month: Option<String>) -> Result<(String, String)> {
-    use chrono::{Datelike, Duration, NaiveDate, Utc};
+    use chrono::{Datelike, Duration, Local, NaiveDate};
 
     if let Some(m) = month {
         let first = NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d")
@@ -278,8 +278,9 @@ fn resolve_date_range(days: i64, month: Option<String>) -> Result<(String, Strin
         let label = format!("{}", first.format("%B %Y"));
         Ok((since, label))
     } else {
-        let since = (Utc::now() - Duration::days(days)).to_rfc3339();
-        let label = Utc::now().format("%Y-%m-%d").to_string();
+        let now = Local::now();
+        let since = (now - Duration::days(days)).to_rfc3339();
+        let label = now.format("%Y-%m-%d").to_string();
         Ok((since, label))
     }
 }
@@ -597,4 +598,27 @@ fn cmd_config_wizard() -> Result<()> {
     let path = ceo::config::Config::config_path();
     eprintln!("Config saved to {}", path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_date_range_daily_uses_local_time() {
+        let (since, label) = resolve_date_range(7, None).unwrap();
+        // Label should be YYYY-MM-DD matching local date
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert_eq!(label, today, "Daily report date should use local time, not UTC");
+        // Since should be an RFC 3339 timestamp with timezone offset
+        assert!(since.contains('+') || since.contains('-'),
+            "since should be RFC 3339 with tz offset, got: {since}");
+    }
+
+    #[test]
+    fn resolve_date_range_monthly_format() {
+        let (since, label) = resolve_date_range(7, Some("2026-03".to_string())).unwrap();
+        assert_eq!(label, "March 2026");
+        assert!(since.starts_with("2026-03-01"));
+    }
 }

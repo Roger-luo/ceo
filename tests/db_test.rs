@@ -355,6 +355,84 @@ fn query_contributor_stats_empty_repos() {
     assert!(results.is_empty());
 }
 
+// --- Email mapping tests ---
+
+#[test]
+fn query_contributor_stats_aggregates_multiple_emails_for_same_user() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let conn = db::open_db_at(&path).unwrap();
+
+    // Same person committing with two different emails
+    let commit_rows = vec![
+        CommitStatsRow {
+            repo: "org/repo".to_string(),
+            sha: "aaa".to_string(),
+            author_email: "alice@company.com".to_string(),
+            committed_at: "2026-03-15".to_string(),
+            additions: 100,
+            deletions: 50,
+            branch: "main".to_string(),
+        },
+        CommitStatsRow {
+            repo: "org/repo".to_string(),
+            sha: "bbb".to_string(),
+            author_email: "alice@personal.com".to_string(),
+            committed_at: "2026-03-16".to_string(),
+            additions: 200,
+            deletions: 30,
+            branch: "main".to_string(),
+        },
+    ];
+    db::upsert_commit_stats(&conn, &commit_rows).unwrap();
+    // Map both emails to the same GitHub handle
+    db::upsert_email_mapping(&conn, "alice@company.com", "alice").unwrap();
+    db::upsert_email_mapping(&conn, "alice@personal.com", "alice").unwrap();
+
+    let results = db::query_contributor_stats(
+        &conn,
+        &["org/repo".to_string()],
+        "2026-03-01",
+    ).unwrap();
+
+    // Both emails should resolve to "alice" and be aggregated into one row
+    assert_eq!(results.len(), 1, "Multiple emails for same user should aggregate");
+    assert_eq!(results[0].author, "alice");
+    assert_eq!(results[0].additions, 300);
+    assert_eq!(results[0].deletions, 80);
+    assert_eq!(results[0].commits, 2);
+}
+
+#[test]
+fn query_contributor_stats_falls_back_to_email_prefix_without_mapping() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let conn = db::open_db_at(&path).unwrap();
+
+    let commit_rows = vec![CommitStatsRow {
+        repo: "org/repo".to_string(),
+        sha: "aaa".to_string(),
+        author_email: "dplankensteiner@company.com".to_string(),
+        committed_at: "2026-03-15".to_string(),
+        additions: 100,
+        deletions: 50,
+        branch: "main".to_string(),
+    }];
+    db::upsert_commit_stats(&conn, &commit_rows).unwrap();
+    // No email mapping added — should fall back to email prefix
+
+    let results = db::query_contributor_stats(
+        &conn,
+        &["org/repo".to_string()],
+        "2026-03-01",
+    ).unwrap();
+
+    assert_eq!(results.len(), 1);
+    // Without mapping, author should be email prefix (before @)
+    assert_eq!(results[0].author, "dplankensteiner",
+        "Without email mapping, author should fall back to email prefix");
+}
+
 // --- Schema version tests ---
 
 #[test]

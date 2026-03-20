@@ -508,6 +508,10 @@ fn clone_or_fetch_repo(repo: &str) -> std::result::Result<PathBuf, SyncError> {
     let repo_path = repos_dir().join(format!("{}.git", repo));
 
     if repo_path.exists() {
+        // Ensure the fetch refspec is set. `git clone --bare` does not configure one,
+        // so without this, `git fetch` only updates FETCH_HEAD and never updates
+        // local branch refs — making new commits invisible to `git log`.
+        ensure_fetch_refspec(&repo_path, repo)?;
         let output = Command::new("git")
             .args(["fetch", "--prune"])
             .current_dir(&repo_path)
@@ -531,9 +535,33 @@ fn clone_or_fetch_repo(repo: &str) -> std::result::Result<PathBuf, SyncError> {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(SyncError::Git(format!("git clone failed for {repo}: {stderr}")));
         }
+        // Set the fetch refspec right after cloning so future fetches update branches.
+        ensure_fetch_refspec(&repo_path, repo)?;
     }
 
     Ok(repo_path)
+}
+
+/// Ensure the bare repo has a fetch refspec configured so `git fetch` updates branch refs.
+fn ensure_fetch_refspec(repo_path: &std::path::Path, repo: &str) -> std::result::Result<(), SyncError> {
+    let output = Command::new("git")
+        .args(["config", "--get", "remote.origin.fetch"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| SyncError::Git(format!("git config failed for {repo}: {e}")))?;
+    if !output.status.success() || output.stdout.is_empty() {
+        let set_output = Command::new("git")
+            .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"])
+            .current_dir(repo_path)
+            .output()
+            .map_err(|e| SyncError::Git(format!("git config set failed for {repo}: {e}")))?;
+        if !set_output.status.success() {
+            let stderr = String::from_utf8_lossy(&set_output.stderr);
+            return Err(SyncError::Git(format!("failed to set fetch refspec for {repo}: {stderr}")));
+        }
+        log::info!("Set fetch refspec for {repo} bare repo");
+    }
+    Ok(())
 }
 
 struct GitCommitStat {
@@ -1015,5 +1043,81 @@ Alice Smith
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].additions, 0);
         assert_eq!(stats[0].deletions, 0);
+    }
+
+    #[test]
+    fn ensure_fetch_refspec_sets_missing_refspec() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare_path = dir.path().join("test.git");
+
+        // Create a bare repo without a fetch refspec (mimics `git clone --bare`)
+        let output = Command::new("git")
+            .args(["init", "--bare", &bare_path.to_string_lossy()])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+
+        // Add a remote origin, then remove the fetch refspec to simulate `git clone --bare`
+        Command::new("git")
+            .args(["remote", "add", "origin", "https://github.com/test/repo.git"])
+            .current_dir(&bare_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "--unset", "remote.origin.fetch"])
+            .current_dir(&bare_path)
+            .output()
+            .unwrap();
+
+        // Verify no fetch refspec exists
+        let output = Command::new("git")
+            .args(["config", "--get", "remote.origin.fetch"])
+            .current_dir(&bare_path)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "Should have no fetch refspec initially");
+
+        // Run ensure_fetch_refspec
+        ensure_fetch_refspec(&bare_path, "test/repo").unwrap();
+
+        // Verify refspec was set
+        let output = Command::new("git")
+            .args(["config", "--get", "remote.origin.fetch"])
+            .current_dir(&bare_path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "fetch refspec should now be set");
+        let refspec = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(refspec, "+refs/heads/*:refs/heads/*");
+    }
+
+    #[test]
+    fn ensure_fetch_refspec_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare_path = dir.path().join("test.git");
+
+        Command::new("git")
+            .args(["init", "--bare", &bare_path.to_string_lossy()])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", "https://github.com/test/repo.git"])
+            .current_dir(&bare_path)
+            .output()
+            .unwrap();
+
+        // Set refspec twice — should not error or duplicate
+        ensure_fetch_refspec(&bare_path, "test/repo").unwrap();
+        ensure_fetch_refspec(&bare_path, "test/repo").unwrap();
+
+        // Should still have exactly one refspec line
+        let output = Command::new("git")
+            .args(["config", "--get-all", "remote.origin.fetch"])
+            .current_dir(&bare_path)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let lines: Vec<&str> = stdout.trim().lines().collect();
+        assert_eq!(lines.len(), 1, "Should have exactly one fetch refspec, not duplicates");
     }
 }

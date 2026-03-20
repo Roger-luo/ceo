@@ -88,6 +88,7 @@ pub async fn run_pipeline(
 
     Ok(Report {
         date: ctx.date_label.clone(),
+        generated_at: chrono::Local::now().to_rfc3339(),
         executive_summary,
         repos,
         team_stats: ctx.team_stats,

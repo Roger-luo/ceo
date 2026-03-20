@@ -108,6 +108,8 @@ pub fn extract_xml_tag(text: &str, tag: &str) -> Option<String> {
 
 pub struct Report {
     pub date: String,
+    /// Full timestamp of when the report was generated, including timezone (e.g. "2026-03-19T14:32:05-07:00").
+    pub generated_at: String,
     pub executive_summary: Option<String>,
     pub repos: Vec<RepoSection>,
     pub team_stats: Vec<TeamStats>,
@@ -507,6 +509,9 @@ pub fn render_markdown(report: &Report) -> String {
         }
         writeln!(out).unwrap();
     }
+
+    writeln!(out, "---\n").unwrap();
+    writeln!(out, "*Generated at {}*", report.generated_at).unwrap();
 
     out
 }
